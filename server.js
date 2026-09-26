@@ -1,0 +1,196 @@
+import { Server } from 'socket.io';
+import { createServer } from 'http';
+
+const httpServer = createServer((req, res) => {
+  // Simple REST endpoint to get active public waiting rooms
+  if (req.method === 'GET' && req.url === '/rooms') {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/json');
+    
+    const roomList = Object.keys(rooms)
+      .filter(roomName => rooms[roomName].status === 'waiting')
+      .map(roomName => ({
+        name: roomName,
+        playerCount: Object.keys(rooms[roomName].players).length,
+        isPrivate: !!rooms[roomName].password
+      }));
+    
+    res.end(JSON.stringify(roomList));
+  }
+});
+
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"]
+  }
+});
+
+// rooms[roomName] = { players: {}, host: 'socketId', password: '', status: 'waiting' }
+const rooms = {};
+
+io.on('connection', (socket) => {
+  console.log(`Player connected: ${socket.id}`);
+  let currentRoom = null;
+
+  socket.on('joinRoom', (data, callback) => {
+    const roomName = data.roomName;
+    const password = data.password || '';
+
+    // If room exists and has a password, check it
+    if (rooms[roomName] && rooms[roomName].password && rooms[roomName].password !== password) {
+      if (callback) callback({ success: false, reason: 'Invalid password' });
+      return;
+    }
+
+    // Leave previous room if any
+    if (currentRoom) {
+      socket.leave(currentRoom);
+      if (rooms[currentRoom] && rooms[currentRoom].players[socket.id]) {
+        delete rooms[currentRoom].players[socket.id];
+        socket.to(currentRoom).emit('playerDisconnected', socket.id);
+        
+        // Clean up empty rooms
+        if (Object.keys(rooms[currentRoom].players).length === 0) {
+          delete rooms[currentRoom];
+        }
+      }
+    }
+
+    currentRoom = roomName;
+    socket.join(roomName);
+
+    // Create room if it doesn't exist
+    if (!rooms[roomName]) {
+      rooms[roomName] = { 
+        players: {}, 
+        host: socket.id, 
+        password: password, 
+        status: 'waiting' 
+      };
+    }
+
+    // Add player to room state
+    rooms[roomName].players[socket.id] = {
+      id: socket.id,
+      x: 0, y: 0, z: 0,
+      rx: 0, ry: 0,
+      health: 100,
+      dead: false,
+      weaponIndex: 0
+    };
+
+    console.log(`Player ${socket.id} joined room ${roomName} (Host: ${rooms[roomName].host === socket.id})`);
+
+    // Send all existing players in the room to the new player
+    socket.emit('currentPlayers', rooms[roomName].players);
+    socket.emit('roomStatus', { 
+      host: rooms[roomName].host, 
+      status: rooms[roomName].status 
+    });
+
+    // Broadcast to all OTHER players in the room that a new player joined
+    socket.to(roomName).emit('newPlayer', rooms[roomName].players[socket.id]);
+    
+    if (callback) callback({ success: true, room: roomName, isHost: rooms[roomName].host === socket.id });
+  });
+
+  socket.on('startGame', () => {
+    if (currentRoom && rooms[currentRoom] && rooms[currentRoom].host === socket.id) {
+      rooms[currentRoom].status = 'playing';
+      io.to(currentRoom).emit('matchStarted');
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log(`Player disconnected: ${socket.id}`);
+    if (currentRoom && rooms[currentRoom]) {
+      delete rooms[currentRoom].players[socket.id];
+      socket.to(currentRoom).emit('playerDisconnected', socket.id);
+      
+      if (Object.keys(rooms[currentRoom].players).length === 0) {
+        delete rooms[currentRoom];
+      } else if (rooms[currentRoom].host === socket.id) {
+        // Assign new host if the host leaves
+        const nextPlayer = Object.keys(rooms[currentRoom].players)[0];
+        rooms[currentRoom].host = nextPlayer;
+        io.to(currentRoom).emit('roomStatus', { 
+          host: rooms[currentRoom].host, 
+          status: rooms[currentRoom].status 
+        });
+      }
+    }
+  });
+
+  socket.on('playerMovement', (movementData) => {
+    if (currentRoom && rooms[currentRoom] && rooms[currentRoom].players[socket.id]) {
+      const player = rooms[currentRoom].players[socket.id];
+      player.x = movementData.x;
+      player.y = movementData.y;
+      player.z = movementData.z;
+      player.rx = movementData.rx;
+      player.ry = movementData.ry;
+      
+      socket.to(currentRoom).emit('playerMoved', player);
+    }
+  });
+  
+  socket.on('weaponChanged', (weaponIndex) => {
+    if (currentRoom && rooms[currentRoom] && rooms[currentRoom].players[socket.id]) {
+      rooms[currentRoom].players[socket.id].weaponIndex = weaponIndex;
+      socket.to(currentRoom).emit('playerWeaponChanged', { id: socket.id, weaponIndex });
+    }
+  });
+
+  socket.on('playerShot', (shotData) => {
+    if (currentRoom) {
+      socket.to(currentRoom).emit('playerFired', { id: socket.id, ...shotData });
+    }
+  });
+  
+  socket.on('playerHit', (hitData) => {
+    if (!currentRoom || !rooms[currentRoom]) return;
+    
+    const targetId = hitData.targetId;
+    const damage = hitData.damage;
+    const headshot = hitData.headshot;
+    const targetPlayer = rooms[currentRoom].players[targetId];
+    
+    if (targetPlayer && !targetPlayer.dead) {
+      targetPlayer.health -= damage;
+      
+      if (targetPlayer.health <= 0) {
+        targetPlayer.health = 0;
+        targetPlayer.dead = true;
+        
+        io.to(currentRoom).emit('playerDied', { 
+          victimId: targetId, 
+          killerId: socket.id, 
+          headshot: headshot 
+        });
+      } else {
+        io.to(targetId).emit('takeDamage', { 
+          damage: damage, 
+          attackerId: socket.id 
+        });
+      }
+    }
+  });
+  
+  socket.on('respawn', (spawnPoint) => {
+    if (currentRoom && rooms[currentRoom] && rooms[currentRoom].players[socket.id]) {
+      const player = rooms[currentRoom].players[socket.id];
+      player.health = 100;
+      player.dead = false;
+      player.x = spawnPoint.x;
+      player.y = spawnPoint.y;
+      player.z = spawnPoint.z;
+      io.to(currentRoom).emit('playerRespawned', player);
+    }
+  });
+});
+
+const PORT = process.env.PORT || 3001;
+httpServer.listen(PORT, () => {
+  console.log(`✅ Game Server running on port ${PORT} with Room support`);
+});

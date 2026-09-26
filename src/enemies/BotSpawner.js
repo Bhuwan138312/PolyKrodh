@@ -25,7 +25,7 @@ export class BotSpawner {
         const z = Math.floor(Math.random() * this.navigation.size);
         if (this.navigation.isWalkableCell(x, z)) {
           const pt = this.navigation.cellToWorld(x, z);
-          if (pt.distanceTo(playerSpawn) > 4) {
+          if (pt.distanceTo(playerSpawn) > 20) {
             const tooClose = spawnPoints.some(s => s.distanceTo(pt) < 1.5);
             if (!tooClose) {
               const snapped = this.arena.groundSnap(pt, 0.45, 1.85);

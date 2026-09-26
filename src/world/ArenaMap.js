@@ -144,17 +144,17 @@ export class ArenaMap {
   }
 
   createLighting() {
-    // Sunrise ambient - boosted heavily to prevent pitch black shadows
-    const ambient = new THREE.AmbientLight(0xb5a7c2, 1.2);
+    // Afternoon ambient - neutral and bright
+    const ambient = new THREE.AmbientLight(0xffffff, 0.8);
     this.scene.add(ambient);
 
-    // Hemisphere: Warm sky above, lighter purple ground below
-    const hemisphere = new THREE.HemisphereLight(0xffddc4, 0x8a7b96, 2.0);
+    // Hemisphere: Natural bright sky blue above, dark shadow bounce below
+    const hemisphere = new THREE.HemisphereLight(0x88bbff, 0x222233, 1.5);
     this.scene.add(hemisphere);
 
-    // Sunrise Sun (warm orange, low angle, cast long shadows)
-    const sun = new THREE.DirectionalLight(0xffa855, 3.2);
-    sun.position.set(-45, 12, 35);
+    // Afternoon Sun (bright pale yellow/white, high angle, crisp shadows)
+    const sun = new THREE.DirectionalLight(0xfff9e6, 3.8);
+    sun.position.set(-20, 45, 20); // Higher in the sky for afternoon
     sun.castShadow = true;
     sun.shadow.mapSize.set(1024, 1024);
     sun.shadow.camera.left = -42;
@@ -162,19 +162,19 @@ export class ArenaMap {
     sun.shadow.camera.top = 42;
     sun.shadow.camera.bottom = -42;
     sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 150;
+    sun.shadow.camera.far = 350;
     sun.shadow.bias = -0.0004;
     sun.shadow.normalBias = 0.025;
     this.scene.add(sun);
 
-    // Cool morning fill light to balance the shadows
-    const fill = new THREE.DirectionalLight(0x769ebf, 1.8);
-    fill.position.set(30, 20, -25);
+    // Natural sky fill light to balance the shadows and provide contrast
+    const fill = new THREE.DirectionalLight(0xaaccff, 1.2);
+    fill.position.set(30, 30, -25);
     this.scene.add(fill);
   }
 
   createGround() {
-    const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x789a72, roughness: 1 });
+    const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x080808, roughness: 1 });
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(ARENA_SIZE, ARENA_SIZE), groundMaterial);
     ground.rotation.x = -Math.PI / 2;
     ground.position.y = -0.02;

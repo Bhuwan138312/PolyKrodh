@@ -71,6 +71,7 @@
           <div><kbd>Space</kbd><span>JUMP</span></div>
           <div><kbd>Shift</kbd><span>SPRINT</span></div>
           <div><kbd>R</kbd><span>RELOAD</span></div>
+          <div><kbd>Q</kbd><span>ALT VIEW</span></div>
           <div><kbd>1</kbd><kbd>2</kbd><span>WEAPON</span></div>
           <div><kbd>Right Click</kbd><span>AIM</span></div>
           <div><kbd>H</kbd><span>TOGGLE THIS MENU</span></div>
@@ -116,12 +117,99 @@
           </div>
         </div>
 
-        <div class="menu-actions">
-          <button id="play-button" class="primary-button"><span>PLAY</span><i>→</i></button>
-          <button id="how-button" class="secondary-button">SETTINGS</button>
-          <button id="quit-button" class="secondary-button subtle">QUIT</button>
+        <div class="menu-actions" style="display: flex; flex-direction: column; gap: 15px;">
+          <div style="display: flex; gap: 8px;">
+            <button id="play-button" class="primary-button" style="flex: 1;"><span>PLAY SOLO</span><i>→</i></button>
+            <button id="how-button" class="secondary-button" style="flex: 0 0 auto;">SETTINGS</button>
+            <button id="quit-button" class="secondary-button subtle" style="flex: 0 0 auto;">QUIT</button>
+          </div>
+          <div style="border-top: 1px solid rgba(255, 255, 255, 0.1); padding-top: 12px; display: flex; flex-direction: column; gap: 8px;">
+            <div class="section-label" style="margin: 0;">MULTIPLAYER (PVP)</div>
+            <div style="display: flex; gap: 8px;">
+              <button id="host-button" class="primary-button" style="background: #e28743; flex: 1;"><span>HOST MATCH</span><i>→</i></button>
+              <button id="join-button" class="primary-button" style="background: #438ce2; flex: 1;"><span>JOIN MATCH</span><i>→</i></button>
+            </div>
+          </div>
         </div>
         <div class="menu-footer"><span>WASD TO MOVE</span><span>MOUSE TO AIM</span><span>ESC TO PAUSE</span></div>
+      </div>
+    </section>
+
+    <section id="host-screen" class="screen modal-screen is-hidden">
+      <div class="panel how-panel">
+        <div class="panel-kicker">MULTIPLAYER</div>
+        <h2>HOST MATCH</h2>
+        
+        <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 20px;">
+          <label style="width: 100%;">ROOM NAME</label>
+          <input type="text" id="host-room-input" value="MyLobby" style="width: 100%; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid var(--cyan); color: var(--cyan); font-family: monospace; font-size: 1.2rem; outline: none;" />
+        </div>
+
+        <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 15px;">
+          <label style="width: 100%;">ROOM PASSWORD (OPTIONAL)</label>
+          <input type="password" id="host-password-input" placeholder="Leave blank for public room" style="width: 100%; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid var(--cyan); color: white; font-family: monospace; font-size: 1.2rem; outline: none;" />
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-top: 30px;">
+          <button id="host-confirm-btn" class="primary-button" style="flex: 1; background: var(--amber);"><span>START HOSTING</span><i>→</i></button>
+          <button id="host-cancel-btn" class="secondary-button subtle" style="flex: 0 0 auto;">CANCEL</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="password-screen" class="screen modal-screen is-hidden">
+      <div class="panel how-panel" style="max-width: 400px;">
+        <div class="panel-kicker">PRIVATE ROOM</div>
+        <h2 id="password-room-name">ROOM NAME</h2>
+        
+        <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 20px;">
+          <input type="password" id="join-password-input" placeholder="ENTER PASSWORD" style="width: 100%; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid var(--amber); color: white; font-family: monospace; font-size: 1.2rem; outline: none;" />
+          <div id="password-error" style="color: var(--amber); font-size: 0.9rem; display: none;">INCORRECT PASSWORD</div>
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+          <button id="password-confirm-btn" class="primary-button" style="flex: 1; background: var(--amber);"><span>JOIN</span><i>→</i></button>
+          <button id="password-cancel-btn" class="secondary-button subtle" style="flex: 0 0 auto;">CANCEL</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="lobby-screen" class="screen modal-screen is-hidden">
+      <div class="panel how-panel" style="max-width: 600px;">
+        <div class="panel-kicker">MULTIPLAYER</div>
+        <h2>WAITING IN LOBBY</h2>
+        
+        <div style="color: var(--cyan); margin-top: 10px; font-size: 1.2rem;">ROOM: <span id="lobby-room-name"></span></div>
+
+        <div id="lobby-players-container" style="margin-top: 15px; height: 300px; overflow-y: auto; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+          <!-- Players injected here -->
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+          <button id="lobby-start-btn" class="primary-button" style="flex: 1; background: var(--amber); display: none;"><span>START MATCH</span><i>→</i></button>
+          <button id="lobby-leave-btn" class="secondary-button subtle" style="flex: 0 0 auto;">LEAVE</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="join-screen" class="screen modal-screen is-hidden">
+      <div class="panel how-panel" style="max-width: 600px;">
+        <div class="panel-kicker">MULTIPLAYER</div>
+        <h2>SERVER BROWSER</h2>
+        
+        <div class="settings-row" style="flex-direction: column; align-items: flex-start; gap: 12px; margin-top: 20px;">
+          <input type="text" id="join-search-input" placeholder="SEARCH ROOMS..." style="width: 100%; padding: 12px; background: rgba(0,0,0,0.5); border: 1px solid var(--cyan); color: white; font-family: monospace; font-size: 1rem; outline: none;" />
+        </div>
+
+        <div id="room-list-container" style="margin-top: 15px; height: 300px; overflow-y: auto; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+          <!-- Rooms injected here -->
+          <div style="color: rgba(255,255,255,0.5); text-align: center; margin-top: 20px;" id="room-list-status">LOADING SERVERS...</div>
+        </div>
+
+        <div style="display: flex; gap: 10px; margin-top: 20px;">
+          <button id="join-refresh-btn" class="secondary-button" style="flex: 1;">REFRESH LIST</button>
+          <button id="join-cancel-btn" class="secondary-button subtle" style="flex: 1;">CANCEL</button>
+        </div>
       </div>
     </section>
 
@@ -152,6 +240,7 @@
             <div><kbd data-read-action="jump">Space</kbd><span>JUMP</span></div>
             <div><kbd data-read-action="sprint">Shift</kbd><span>SPRINT</span></div>
             <div><kbd data-read-action="reload">R</kbd><span>RELOAD</span></div>
+            <div><kbd>Q</kbd><span>ALT VIEW</span></div>
           </div>
           <button id="custom-controls-btn" class="secondary-button" style="width: 100%; text-align: center; justify-content: center; font-size: 1rem; padding: 12px;">CUSTOMIZE CONTROLS</button>
         </div>

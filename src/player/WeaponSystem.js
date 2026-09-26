@@ -659,6 +659,8 @@ export class WeaponSystem {
       return;
     }
 
+    this.callbacks.onFired?.(shot.origin, shot.direction);
+
     this.magazine -= 1;
     this.fireCooldown = this.config.fireInterval;
     this.flashTimer = 0.045;
@@ -831,6 +833,8 @@ export class WeaponSystem {
         ? faceNormal.clone().transformDirection(object.matrixWorld).normalize()
         : direction.clone().negate());
     const bot = object?.userData?.bot;
+    const isPlayer = object?.userData?.isPlayer;
+    
     if (bot && !bot.dead) {
       this.shotDiagnostics.botHits += 1;
       const headshot = Boolean(object.userData.head);
@@ -840,6 +844,15 @@ export class WeaponSystem {
         headshot ? this.config.headDamage : this.config.bodyDamage,
         intersection.point,
         headshot,
+      );
+    } else if (isPlayer) {
+      // Simplistic headshot detection for remote players based on local Y height difference
+      const headshot = intersection.point.y > object.position.y + 0.6; 
+      this.effects.hit(intersection.point, headshot);
+      this.callbacks.onPlayerHit?.(
+        object.userData.id, 
+        headshot ? this.config.headDamage : this.config.bodyDamage, 
+        headshot
       );
     } else {
       this.effects.impact(intersection.point, normal, 'dust');

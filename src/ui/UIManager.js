@@ -7,6 +7,10 @@ export class UIManager {
     this.screens = {
       loading: document.querySelector('#loading-screen'),
       menu: document.querySelector('#main-menu'),
+      host: document.querySelector('#host-screen'),
+      join: document.querySelector('#join-screen'),
+      password: document.querySelector('#password-screen'),
+      lobby: document.querySelector('#lobby-screen'),
       how: document.querySelector('#how-screen'),
       customControls: document.querySelector('#custom-controls-screen'),
       pause: document.querySelector('#pause-screen'),
@@ -62,6 +66,31 @@ export class UIManager {
 
     const actions = [
       ['#play-button', () => this.callbacks.startMatch?.(this.difficulty, 'arena')],
+      ['#host-button', () => this.show('host')],
+      ['#host-cancel-btn', () => this.show('menu')],
+      ['#host-confirm-btn', () => {
+        const roomName = document.querySelector('#host-room-input').value.trim() || 'MyLobby';
+        const password = document.querySelector('#host-password-input').value.trim();
+        this.callbacks.hostMatch?.(roomName, password);
+      }],
+      ['#join-button', () => {
+        this.show('join');
+        this.refreshRoomList();
+      }],
+      ['#join-cancel-btn', () => this.show('menu')],
+      ['#join-refresh-btn', () => this.refreshRoomList()],
+      ['#password-cancel-btn', () => {
+        document.querySelector('#join-password-input').value = '';
+        document.querySelector('#password-error').style.display = 'none';
+        this.show('join');
+      }],
+      ['#password-confirm-btn', () => {
+        const password = document.querySelector('#join-password-input').value.trim();
+        document.querySelector('#password-error').style.display = 'none';
+        this.callbacks.joinMatch?.(this.pendingJoinRoomName, password);
+      }],
+      ['#lobby-start-btn', () => this.callbacks.startGame?.()],
+      ['#lobby-leave-btn', () => this.callbacks.leaveLobby?.()],
       ['#how-button', () => {
         this.settingsSource = 'menu';
         this.show('how');
@@ -184,6 +213,89 @@ export class UIManager {
         this.controlsOverlay?.classList.toggle('is-hidden');
       }
     });
+
+    const searchInput = document.querySelector('#join-search-input');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        if (this.currentRooms) {
+          this.renderRoomList(this.currentRooms, searchInput.value);
+        }
+      });
+    }
+  }
+
+  async refreshRoomList() {
+    const container = document.querySelector('#room-list-container');
+    const searchInput = document.querySelector('#join-search-input');
+    container.innerHTML = '<div style="color: rgba(255,255,255,0.5); text-align: center; margin-top: 20px;">LOADING SERVERS...</div>';
+    
+    try {
+      const res = await fetch(`http://${window.location.hostname}:3001/rooms`);
+      const rooms = await res.json();
+      this.currentRooms = rooms;
+      this.renderRoomList(rooms, searchInput.value);
+    } catch (e) {
+      container.innerHTML = '<div style="color: var(--amber); text-align: center; margin-top: 20px;">ERROR CONNECTING TO MASTER SERVER</div>';
+    }
+  }
+
+  renderRoomList(rooms, filter = '') {
+    const container = document.querySelector('#room-list-container');
+    const filtered = rooms.filter(r => r.name.toLowerCase().includes(filter.toLowerCase()));
+    
+    if (filtered.length === 0) {
+      container.innerHTML = '<div style="color: rgba(255,255,255,0.5); text-align: center; margin-top: 20px;">NO ROOMS FOUND</div>';
+      return;
+    }
+    
+    container.innerHTML = '';
+    filtered.forEach(r => {
+      const btn = document.createElement('button');
+      btn.className = 'secondary-button';
+      btn.style.width = '100%';
+      btn.style.justifyContent = 'space-between';
+      btn.style.padding = '12px 15px';
+      btn.innerHTML = `<span style="font-family: monospace; font-size: 1.1rem; color: white;">${r.isPrivate ? '🔒 ' : ''}${r.name}</span><span style="color: var(--cyan);">${r.playerCount} PLAYERS</span>`;
+      btn.onclick = () => {
+        this.audio.play('ui');
+        if (r.isPrivate) {
+          this.pendingJoinRoomName = r.name;
+          document.querySelector('#password-room-name').textContent = r.name;
+          this.show('password');
+        } else {
+          this.callbacks.joinMatch?.(r.name, '');
+        }
+      };
+      container.appendChild(btn);
+    });
+  }
+
+  updateLobbyPlayers(players, hostId, myId) {
+    const container = document.querySelector('#lobby-players-container');
+    container.innerHTML = '';
+    
+    Object.values(players).forEach((p, index) => {
+      const div = document.createElement('div');
+      div.style.padding = '10px 15px';
+      div.style.background = 'rgba(0,0,0,0.4)';
+      div.style.borderLeft = p.id === myId ? '3px solid var(--amber)' : '3px solid var(--cyan)';
+      div.style.display = 'flex';
+      div.style.justifyContent = 'space-between';
+      div.style.fontFamily = 'monospace';
+      
+      const isHost = p.id === hostId;
+      div.innerHTML = `
+        <span style="color: white;">PLAYER ${index + 1} ${p.id === myId ? '<span style="color: var(--amber);">(YOU)</span>' : ''}</span>
+        <span style="color: ${isHost ? 'var(--amber)' : 'var(--cyan)'};">${isHost ? 'HOST' : 'JOINED'}</span>
+      `;
+      container.appendChild(div);
+    });
+    
+    // Show/hide start button depending on if we are the host
+    const startBtn = document.querySelector('#lobby-start-btn');
+    if (startBtn) {
+      startBtn.style.display = myId === hostId ? 'flex' : 'none';
+    }
   }
 
   finishLoading() {

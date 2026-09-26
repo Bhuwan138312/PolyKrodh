@@ -9,6 +9,7 @@ import { PlayerController } from '../player/PlayerController.js';
 import { WeaponSystem } from '../player/WeaponSystem.js';
 import { BotSpawner } from '../enemies/BotSpawner.js';
 import { UIManager } from '../ui/UIManager.js';
+import { NetworkManager } from './NetworkManager.js';
 
 export class Game {
   constructor(container) {
@@ -25,10 +26,10 @@ export class Game {
     this.pointerLockWasActive = false;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0xffc599);
-    this.scene.fog = new THREE.Fog(0xffc599, 40, 110);
+    this.scene.background = new THREE.Color(0x8abdf2); // Bright afternoon sky
+    this.scene.fog = new THREE.Fog(0x8abdf2, 120, 350);
 
-    this.camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.045, 150);
+    this.camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.045, 500);
     this.camera.rotation.order = 'YXZ';
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -58,8 +59,18 @@ export class Game {
     this.player.onHealthChanged = (health) => this.ui.setHealth(health, this.player.health.maxHealth);
     this.player.onDeath = () => this.queueOutcome(false);
     const createWeaponCallbacks = (getWeapon) => ({
-      getBotHitMeshes: () => this.spawner.getHitMeshes(),
+      getBotHitMeshes: () => {
+        const bots = this.spawner.getHitMeshes();
+        const players = this.isMultiplayer && this.network ? this.network.getHitMeshes() : [];
+        return [...bots, ...players];
+      },
       onBotHit: (bot, damage, point, headshot) => this.handleBotHit(bot, damage, point, headshot),
+      onPlayerHit: (id, damage, headshot) => {
+        if (this.isMultiplayer && this.network) this.network.sendHit(id, damage, headshot);
+      },
+      onFired: (origin, direction) => {
+        if (this.isMultiplayer && this.network) this.network.sendShot(origin, direction);
+      },
       onAmmoChange: (magazine, reserve, reloading, elapsed) => {
         if (this.activeWeapon === getWeapon()) this.ui.setAmmo(magazine, reserve, reloading, elapsed, getWeapon().config);
       },
@@ -135,9 +146,35 @@ export class Game {
       onDeath: (bot) => this.handleBotDeath(bot),
     });
 
+    this.network = new NetworkManager(this);
+
     this.ui = new UIManager({ audio: this.audio, weaponConfig: GAME_CONFIG.weapon });
     this.ui.setCallbacks({
-      startMatch: (difficulty, map) => this.startMatch(difficulty, map),
+      startMatch: (difficulty, map) => this.startMatch(difficulty, map, false),
+      hostMatch: (roomName, password) => {
+        if (roomName) {
+          this.isMultiplayer = true;
+          const address = `http://${window.location.hostname}:3001`;
+          this.network.connect(address, roomName, password);
+        }
+      },
+      joinMatch: (roomName, password) => {
+        if (roomName) {
+          this.isMultiplayer = true;
+          const address = `http://${window.location.hostname}:3001`;
+          this.network.connect(address, roomName, password);
+        }
+      },
+      startGame: () => {
+        if (this.network && this.network.socket) {
+          this.network.socket.emit('startGame');
+        }
+      },
+      leaveLobby: () => {
+        if (this.network) this.network.disconnect();
+        this.isMultiplayer = false;
+        this.ui.show('menu');
+      },
       resume: () => this.resume(),
       restart: () => this.startMatch(this.difficultyKey, this.currentMapName),
       showMenu: () => this.showMenu(),
@@ -184,17 +221,25 @@ export class Game {
     });
   }
 
-  async startMatch(difficultyKey = 'normal', mapName = 'arena') {
+  async startMatch(difficultyKey = 'normal', mapName = 'arena', isMultiplayer = false, isHost = false, roomName = 'Lobby') {
     this.audio.resume();
     this.difficultyKey = difficultyKey in GAME_CONFIG.difficulties ? difficultyKey : 'normal';
     this.difficulty = GAME_CONFIG.difficulties[this.difficultyKey];
+    this.isMultiplayer = isMultiplayer;
+
+    this.ui.screens.loading.classList.remove('is-hidden');
+
+    // Yield to the browser so the loading screen actually renders before we freeze the main thread
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     if (this.currentMapName !== mapName) {
-      this.ui.screens.loading.classList.remove('is-hidden');
       await this.arena.loadMapModel(mapName);
       this.navigation.build();
       this.currentMapName = mapName;
-      this.ui.screens.loading.classList.add('is-hidden');
+    }
+
+    if (!this.isMultiplayer) {
+      this.network.disconnect();
     }
 
     this.kills = 0;
@@ -213,13 +258,34 @@ export class Game {
       w.reset();
     });
     this.activeWeapon.model.visible = true;
-    this.spawner.spawnMatch(this.player.root.position, this.difficulty);
+    
+    if (!this.isMultiplayer) {
+      this.spawner.spawnMatch(this.player.root.position, this.difficulty);
+    } else {
+      this.spawner.clear();
+    }
+    
     this.updateDynamicActors();
     this.ui.setHealth(this.player.health.current, this.player.health.maxHealth);
     this.ui.setAmmo(this.activeWeapon.magazine, this.activeWeapon.reserve, false, 0, this.activeWeapon.config);
-    this.ui.setEnemies(this.spawner.getAlive());
+    
+    if (this.isMultiplayer) {
+      this.ui.enemiesValue.parentElement.style.display = 'none'; // Hide hostiles counter in PvP
+    } else {
+      this.ui.enemiesValue.parentElement.style.display = 'flex';
+      this.ui.setEnemies(this.spawner.getAlive());
+    }
     this.ui.setActiveWeaponIcon(this.activeWeaponIndex, this.activeWeapon.displayName);
     this.ui.showHud();
+
+    // Disable dynamic shadows and force a single exact render pass to bake them!
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = true;
+    this.renderer.compile(this.scene, this.camera);
+    this.renderer.render(this.scene, this.camera);
+
+    this.ui.screens.loading.classList.add('is-hidden');
+
     this.state = 'PLAYING';
     this.input.clear();
     this.input.setEnabled(true);
@@ -418,6 +484,12 @@ export class Game {
     this.ui.setCaptureHint(false);
   }
 
+  playerDiedLocally(killerId) {
+    if (this.outcome !== null) return;
+    this.player.health.current = 0;
+    this.queueOutcome(false);
+  }
+
   finishOutcome() {
     const won = this.outcome === 'victory';
     this.state = won ? 'WON' : 'LOST';
@@ -532,6 +604,8 @@ export class Game {
       if (this.state === 'PLAYING') this.updateMatch(delta);
 
       this.arena.update(delta, this.elapsed);
+      if (this.network) this.network.update(delta, this.elapsed * 1000);
+      
       this.effects.update(delta);
       this.audio.updateListener(this.camera);
       this.input.endFrame();
