@@ -7,10 +7,14 @@ export class NetworkManager {
     this.socket = null;
     this.connected = false;
     this.remotePlayers = new Map();
-    
+
     // How often to send movement updates (e.g. 50ms)
-    this.tickRate = 50; 
+    this.tickRate = 50;
     this.lastTickTime = 0;
+    this.lastStateSyncTime = 0;
+    // A remote cylinder stays drawn while the authoritative state says alive.
+    // This is the only place in the codebase allowed to flip that visibility.
+    this.DEATH_THRESHOLD = 0;
   }
 
   connect(serverAddress, roomName = 'Lobby', password = '') {
@@ -106,16 +110,39 @@ export class NetworkManager {
 
     // When someone moves
     this.socket.on('playerMoved', (playerInfo) => {
+      if (!playerInfo || typeof playerInfo.id !== 'string') return;
       const rp = this.remotePlayers.get(playerInfo.id);
       if (rp && this.matchStarted) {
         // We'll interpolate towards this position in the update loop
         rp.targetPosition.set(playerInfo.x, playerInfo.y, playerInfo.z);
         rp.targetRotation = playerInfo.ry;
       }
+      // The server stamps the authoritative health/dead flag onto every
+      // movement packet. Reconciling from it here is what stops a local
+      // cylinder from ever drifting away from the server's verdict.
+      if (playerInfo.health !== undefined || playerInfo.dead !== undefined) {
+        this.applyRemoteState(playerInfo.id, {
+          health: playerInfo.health,
+          isAlive: playerInfo.dead !== undefined ? !playerInfo.dead : undefined,
+        });
+      }
+    });
+
+    // Authoritative health/death broadcast. This is the only signal allowed to
+    // hide or show a remote player. Applying it is idempotent, so a snapshot
+    // that merely repeats the current state can never hide a live player.
+    this.socket.on('playerState', (state) => {
+      if (!state || typeof state.id !== 'string') return;
+      if (state.id === this.socket.id) {
+        this.game.onAuthoritativeSelfState?.(state);
+        return;
+      }
+      this.applyRemoteState(state.id, { health: state.health, isAlive: state.isAlive });
     });
 
     // When someone shoots
     this.socket.on('playerFired', (shotData) => {
+      if (!shotData || !shotData.origin || !shotData.direction) return;
       // Find the remote player
       const rp = this.remotePlayers.get(shotData.id);
       if (rp) {
@@ -124,26 +151,26 @@ export class NetworkManager {
         const direction = new THREE.Vector3(shotData.direction.x, shotData.direction.y, shotData.direction.z);
         
         // Play gunshot sound at their location
-        this.game.audio.play('assault_fire', origin);
+        this.game.audio.play('gunshot', origin);
         
         // Draw the tracer
         const target = origin.clone().add(direction.clone().multiplyScalar(50));
-        this.game.effects.addTracer(origin, target);
-        this.game.effects.addMuzzleFlash(origin, rp.mesh);
+        this.game.effects.tracer(origin, target, true);
       }
     });
 
     // When someone dies
     this.socket.on('playerDied', (data) => {
+      if (!data || typeof data.victimId !== 'string') return;
       if (data.victimId === this.socket.id) {
-        // We died!
+        // We died! The server already decided this, so our own health adopts
+        // the authoritative 0 rather than inferring it from a hit.
         this.game.playerDiedLocally(data.killerId);
       } else {
-        // Someone else died
+        // Someone else died. Authoritative death, so hide them.
         const rp = this.remotePlayers.get(data.victimId);
         if (rp) {
-          rp.dead = true;
-          rp.mesh.visible = false; // Hide them for now
+          this.applyRemoteState(data.victimId, { health: 0, isAlive: false });
           this.game.ui.announceKill('Player ' + data.victimId.substring(0, 4));
         }
       }
@@ -172,10 +199,12 @@ export class NetworkManager {
 
     // When someone respawns
     this.socket.on('playerRespawned', (playerInfo) => {
+      if (!playerInfo || typeof playerInfo.id !== 'string') return;
       const rp = this.remotePlayers.get(playerInfo.id);
       if (rp) {
-        rp.dead = false;
-        rp.mesh.visible = true;
+        // Authoritative revival. Snap them back in immediately so an alive
+        // player is never left hidden.
+        this.applyRemoteState(playerInfo.id, { health: 100, isAlive: true });
         rp.mesh.position.set(playerInfo.x, playerInfo.y + 0.9, playerInfo.z);
         rp.targetPosition.set(playerInfo.x, playerInfo.y, playerInfo.z);
       }
@@ -183,11 +212,40 @@ export class NetworkManager {
 
     // When we take damage from someone else
     this.socket.on('takeDamage', (data) => {
-      this.game.player.health.damage(data.damage);
-      // Play local damage effects
-      this.game.effects.damageVignette();
-      this.game.audio.play('hit_player');
+      if (!data) return;
+      const damage = Number(data.damage);
+      if (!Number.isFinite(damage) || damage <= 0) return;
+      // Health only. This handler deliberately does not touch remote player
+      // visibility, the death state, or the respawn timer - a non-lethal hit
+      // must never be able to remove anybody.
+      this.game.applyLocalDamage(damage, data.health);
     });
+  }
+
+  /**
+   * The single gate for remote player liveness. Visibility is derived from the
+   * authoritative state and nothing else, so a hit can never hide a player and
+   * a state change can never leave a live player hidden.
+   */
+  applyRemoteState(id, { health, isAlive } = {}) {
+    const rp = this.remotePlayers.get(id);
+    if (!rp) return null;
+
+    if (Number.isFinite(health)) rp.health = Math.max(0, health);
+    if (typeof isAlive === 'boolean') {
+      // An explicit isAlive always wins, but it is cross-checked against the
+      // health value so a contradictory packet cannot resurrect a corpse or
+      // bury a healthy player.
+      rp.isAlive = isAlive && rp.health > this.DEATH_THRESHOLD;
+    } else {
+      rp.isAlive = rp.health > this.DEATH_THRESHOLD;
+    }
+    rp.dead = !rp.isAlive;
+
+    // isAlive === true AND health > 0  =>  drawn
+    // isAlive === false OR health <= 0 =>  hidden
+    rp.mesh.visible = rp.isAlive && rp.health > this.DEATH_THRESHOLD;
+    return rp;
   }
 
   updateLobbyUI() {
@@ -225,18 +283,24 @@ export class NetworkManager {
 
     this.game.arena.root.add(bodyMesh);
 
+    const health = Number.isFinite(playerInfo.health) ? Math.max(0, playerInfo.health) : 100;
+    const isAlive = playerInfo.isAlive !== undefined
+      ? Boolean(playerInfo.isAlive)
+      : !(playerInfo.dead === true || health <= 0);
+
     this.remotePlayers.set(playerInfo.id, {
       id: playerInfo.id,
       mesh: bodyMesh,
       targetPosition: new THREE.Vector3(playerInfo.x, playerInfo.y, playerInfo.z),
       targetRotation: playerInfo.ry,
-      dead: playerInfo.dead
+      health,
+      isAlive: isAlive && health > this.DEATH_THRESHOLD,
+      dead: !(isAlive && health > this.DEATH_THRESHOLD)
     });
-    
-    if (playerInfo.dead) {
-      bodyMesh.visible = false;
-    }
-    
+
+    // Drawn whenever the authoritative state says alive - never because of a hit.
+    bodyMesh.visible = health > this.DEATH_THRESHOLD && !(playerInfo.dead === true);
+
     console.log(`Added remote player ${playerInfo.id}`);
   }
 
@@ -258,10 +322,12 @@ export class NetworkManager {
   }
 
   getHitMeshes() {
-    // Return all remote player meshes for raycasting
+    // Return all live remote player meshes for raycasting. Liveness comes from
+    // the same flag that drives rendering, so a shot can never be blocked by -
+    // or aimed at - a cylinder whose visibility disagrees with its health.
     const meshes = [];
     this.remotePlayers.forEach(rp => {
-      if (!rp.dead) {
+      if (rp.isAlive && rp.health > this.DEATH_THRESHOLD) {
         rp.mesh.updateMatrixWorld(true);
         meshes.push(rp.mesh);
       }
@@ -306,6 +372,22 @@ export class NetworkManager {
       
       rp.mesh.rotation.y += diff * 15 * delta;
     });
+
+    // 3. Reconcile visibility against the authoritative liveness every frame.
+    // This is the self-healing guard: whatever else happens, a player the
+    // server still considers alive is drawn, and a player it considers dead is
+    // not. Cheap, and it makes an alive player unable to get stuck invisible.
+    this.remotePlayers.forEach((rp) => {
+      const shouldBeVisible = rp.isAlive && rp.health > this.DEATH_THRESHOLD;
+      if (rp.mesh.visible !== shouldBeVisible) rp.mesh.visible = shouldBeVisible;
+    });
+
+    // 4. Periodically re-pull the authoritative snapshot so both clients
+    // converge on the same alive/dead verdict even if a packet was dropped.
+    if (time - this.lastStateSyncTime > 2000) {
+      this.lastStateSyncTime = time;
+      this.socket.emit('requestPlayerState');
+    }
   }
   
   sendShot(origin, direction) {

@@ -24,6 +24,10 @@ export class Game {
     this.outcomeTimer = 0;
     this.pointerLockPending = false;
     this.pointerLockWasActive = false;
+    // Multiplayer respawn countdown state (see playerDiedLocally).
+    this.respawnPending = false;
+    this.respawnTimer = 0;
+    this.respawnKillerId = null;
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x1a1614); // Dark warehouse interior
@@ -101,7 +105,12 @@ export class Game {
     });
 
     this.player.onHealthChanged = (health) => this.ui.setHealth(health, this.player.health.maxHealth);
-    this.player.onDeath = () => this.queueOutcome(false);
+    // In PvP the server is the only thing allowed to decide we died, so the
+    // local health running out must not fire the solo defeat/outcome flow.
+    this.player.onDeath = () => {
+      if (this.isMultiplayer) return;
+      this.queueOutcome(false);
+    };
     const createWeaponCallbacks = (getWeapon) => ({
       getBotHitMeshes: () => {
         const bots = this.spawner.getHitMeshes();
@@ -110,7 +119,11 @@ export class Game {
       },
       onBotHit: (bot, damage, point, headshot) => this.handleBotHit(bot, damage, point, headshot),
       onPlayerHit: (id, damage, headshot) => {
-        if (this.isMultiplayer && this.network) this.network.sendHit(id, damage, headshot);
+        if (this.isMultiplayer && this.network) {
+          // A confirmed bullet hit is a damage report, nothing more. It never
+          // implies the target died, and it never hides the target.
+          this.network.sendHit(id, damage, headshot);
+        }
       },
       onFired: (origin, direction) => {
         if (this.isMultiplayer && this.network) this.network.sendShot(origin, direction);
@@ -242,14 +255,22 @@ export class Game {
     };
     this.input.onPointerLockChange = (locked) => this.handlePointerLock(locked);
     this.input.onPointerLockError = () => this.handlePointerLockError();
-    this.input.onBlur = () => {
-      if (this.state === 'PLAYING' && !this.outcome) this.pause();
-    };
+    // Losing window focus (alt-tab, Windows key, clicking away) no longer
+    // pauses. InputManager.handleBlur already drops keys, fire and ADS state,
+    // so the match simply carries on and you re-capture the mouse on click.
+    // Escape is the only pause trigger.
+    this.input.onBlur = () => {};
     this.input.onAnyInteraction = () => this.audio.resume();
 
     window.addEventListener('resize', () => this.resize());
+    // Coming back from a hidden tab: re-show the "click to capture" prompt if
+    // the match is still running but the mouse was released while away.
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && this.state === 'PLAYING' && !this.outcome) this.pause();
+      if (document.hidden) return;
+      if (this.state !== 'PLAYING' || this.outcome) return;
+      if (document.pointerLockElement !== this.renderer.domElement) {
+        this.ui.setCaptureHint(true);
+      }
     });
 
     this.player.reset(this.arena.getPlayerSpawn());
@@ -425,6 +446,8 @@ export class Game {
   }
 
   pause() {
+    // A downed multiplayer player must still be able to respawn, so pausing
+    // (Escape / alt-tab) is not allowed to strand them.
     if (this.state !== 'PLAYING' || this.outcome) return;
     this.state = 'PAUSED';
     clearTimeout(this.pointerLockTimeout);
@@ -502,6 +525,14 @@ export class Game {
 
     this.pointerLockPending = false;
     this.pointerLockWasActive = false;
+    // Alt-tabbing also releases pointer lock, but the document is hidden at
+    // that moment and the user did not ask to pause. Treat a hidden-document
+    // unlock as "just lost the mouse" and keep playing; a visible-document
+    // unlock (Escape, or focus moving to another window) still pauses.
+    if (document.hidden) {
+      this.ui.setCaptureHint(true);
+      return;
+    }
     if (this.state === 'PLAYING' && this.input.enabled && !this.outcome) {
       this.pause();
     }
@@ -548,29 +579,70 @@ export class Game {
     this.ui.setCaptureHint(false);
   }
 
-  playerDiedLocally(killerId) {
-    if (this.outcome !== null) return;
-    this.player.health.current = 0;
-    
-    if (this.isMultiplayer) {
-      this.ui.announceKill('You were killed!');
-      // Wait 3 seconds, then respawn
-      setTimeout(() => {
-        if (this.state !== 'PLAYING') return;
-        // Find killer's position to avoid spawning near them
-        let avoidPosition = null;
-        if (killerId && this.network && this.network.remotePlayers.has(killerId)) {
-          avoidPosition = this.network.remotePlayers.get(killerId).mesh.position;
-        }
-        const newSpawn = this.arena.getPlayerSpawn(avoidPosition);
-        this.player.reset(newSpawn);
-        if (this.network && this.network.socket) {
-           this.network.socket.emit('respawn', { x: newSpawn.x, y: newSpawn.y, z: newSpawn.z });
-        }
-      }, 3000);
+  /**
+   * Applies damage that the server says landed on us. Health is the only thing
+   * that changes: no remote mesh is touched and no death is inferred locally.
+   * The server owns the alive/dead verdict and will send `playerDied`.
+   */
+  applyLocalDamage(damage, authoritativeHealth = null) {
+    if (Number.isFinite(authoritativeHealth)) {
+      // Adopt the server's number so both clients agree.
+      this.player.health.setHealth(authoritativeHealth);
     } else {
-      this.queueOutcome(false);
+      this.player.health.damage(damage);
     }
+    // Flash the damage vignette. player.damageFlash is already set by the
+    // health system's onDamage hook and decays on its own in PlayerController,
+    // so nothing extra is needed here - this only paints it for one frame.
+    this.ui.setDamageFlash(Math.max(this.player.damageFlash, 0.35));
+  }
+
+  /** Authoritative verdict about our own player, forwarded by the network. */
+  onAuthoritativeSelfState(state) {
+    if (!state) return;
+    if (state.isAlive === false || state.health <= 0) {
+      this.player.health.kill();
+    } else if (Number.isFinite(state.health)) {
+      this.player.health.setHealth(state.health);
+    }
+  }
+
+  playerDiedLocally(killerId) {
+    if (this.isMultiplayer) {
+      // Guard on the authoritative death flag, not on the outcome system: in
+      // PvP the solo defeat/outcome flow must never run.
+      if (this.respawnPending) return;
+      this.respawnPending = true;
+      this.respawnTimer = 3; // seconds
+      this.respawnKillerId = killerId;
+      this.player.health.kill();
+      this.ui.announceKill('You were killed!');
+      return;
+    }
+
+    if (this.outcome !== null) return;
+    this.player.health.kill();
+    this.queueOutcome(false);
+  }
+
+  /**
+   * Runs the multiplayer respawn countdown. It is driven by the update loop
+   * rather than a raw setTimeout, so pausing or alt-tabbing during the death
+   * window can no longer cancel it and strand the player invisible.
+   */
+  updateMultiplayerRespawn(delta) {
+    if (!this.respawnPending) return;
+    this.respawnTimer -= delta;
+    if (this.respawnTimer > 0) return;
+
+    this.respawnPending = false;
+    const avoidPosition = this.respawnKillerId && this.network?.remotePlayers.has(this.respawnKillerId)
+      ? this.network.remotePlayers.get(this.respawnKillerId).mesh.position
+      : null;
+    const newSpawn = this.arena.getPlayerSpawn(avoidPosition);
+    this.player.reset(newSpawn);
+    this.respawnKillerId = null;
+    this.network?.socket?.emit('respawn', { x: newSpawn.x, y: newSpawn.y, z: newSpawn.z });
   }
 
   finishOutcome() {
@@ -614,6 +686,9 @@ export class Game {
 
   updateMatch(delta) {
     this.updateDynamicActors();
+    // The respawn countdown advances even while paused or dead, so a downed
+    // player always comes back regardless of window focus.
+    if (this.isMultiplayer) this.updateMultiplayerRespawn(delta);
     if (!this.outcome) {
       // Drop ADS during reload or weapon switch
       this.player.forceNoAds = this.activeWeapon.reloading || this.weaponSwitching;
@@ -691,6 +766,9 @@ export class Game {
 
       if (this.state === 'MENU' || this.state === 'QUIT') this.updateMenuCamera(delta);
       if (this.state === 'PLAYING') this.updateMatch(delta);
+      // A downed player is outside the normal match flow, so their respawn
+      // countdown is ticked here too.
+      else if (this.isMultiplayer && this.respawnPending) this.updateMultiplayerRespawn(delta);
 
       this.arena.update(delta, this.elapsed);
       if (this.network) this.network.update(delta, this.elapsed * 1000);

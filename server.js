@@ -44,6 +44,60 @@ const io = new Server(httpServer, {
 // rooms[roomName] = { players: {}, host: 'socketId', password: '', status: 'waiting' }
 const rooms = {};
 
+// How long a dead player stays down before the server revives them. The timer
+// lives here on purpose: if it lived on the client, a pause / alt-tab during the
+// death window would cancel the respawn and the player would stay invisible to
+// everybody forever.
+const RESPAWN_DELAY_MS = 3000;
+const respawnTimers = new Map(); // `${roomName}:${playerId}` -> timeout
+
+function clearRespawnTimer(roomName, playerId) {
+  const key = `${roomName}:${playerId}`;
+  const timer = respawnTimers.get(key);
+  if (timer) {
+    clearTimeout(timer);
+    respawnTimers.delete(key);
+  }
+}
+
+/** The authoritative liveness verdict, derived once and broadcast to everyone. */
+function playerState(player) {
+  return {
+    id: player.id,
+    health: player.health,
+    dead: player.dead,
+    isAlive: !player.dead && player.health > 0,
+  };
+}
+
+/** Revives a player and tells the whole room. Safe to call more than once. */
+function revivePlayer(roomName, playerId, spawnPoint = null) {
+  clearRespawnTimer(roomName, playerId);
+  const room = rooms[roomName];
+  if (!room) return null;
+  const player = room.players[playerId];
+  if (!player) return null;
+  player.health = 100;
+  player.dead = false;
+  if (spawnPoint && Number.isFinite(spawnPoint.x)) {
+    player.x = spawnPoint.x;
+    player.y = spawnPoint.y;
+    player.z = spawnPoint.z;
+  }
+  io.to(roomName).emit('playerRespawned', player);
+  io.to(roomName).emit('playerState', playerState(player));
+  return player;
+}
+
+function scheduleRespawn(roomName, playerId) {
+  clearRespawnTimer(roomName, playerId);
+  const timer = setTimeout(() => {
+    respawnTimers.delete(`${roomName}:${playerId}`);
+    revivePlayer(roomName, playerId);
+  }, RESPAWN_DELAY_MS);
+  respawnTimers.set(`${roomName}:${playerId}`, timer);
+}
+
 io.on('connection', (socket) => {
   console.log(`Player connected: ${socket.id}`);
   let currentRoom = null;
@@ -62,6 +116,7 @@ io.on('connection', (socket) => {
     if (currentRoom) {
       socket.leave(currentRoom);
       if (rooms[currentRoom] && rooms[currentRoom].players[socket.id]) {
+        clearRespawnTimer(currentRoom, socket.id);
         delete rooms[currentRoom].players[socket.id];
         socket.to(currentRoom).emit('playerDisconnected', socket.id);
         
@@ -125,6 +180,9 @@ io.on('connection', (socket) => {
       for (const pid in rooms[currentRoom].players) {
         rooms[currentRoom].players[pid].kills = 0;
         rooms[currentRoom].players[pid].deaths = 0;
+        rooms[currentRoom].players[pid].health = 100;
+        rooms[currentRoom].players[pid].dead = false;
+        clearRespawnTimer(currentRoom, pid);
       }
       io.to(currentRoom).emit('matchStarted', mapName);
       io.to(currentRoom).emit('updateScores', rooms[currentRoom].players);
@@ -134,6 +192,7 @@ io.on('connection', (socket) => {
   socket.on('disconnect', () => {
     console.log(`Player disconnected: ${socket.id}`);
     if (currentRoom && rooms[currentRoom]) {
+      clearRespawnTimer(currentRoom, socket.id);
       delete rooms[currentRoom].players[socket.id];
       socket.to(currentRoom).emit('playerDisconnected', socket.id);
       
@@ -179,61 +238,83 @@ io.on('connection', (socket) => {
   
   socket.on('playerHit', (hitData) => {
     if (!currentRoom || !rooms[currentRoom]) return;
-    
+    if (!hitData || typeof hitData.targetId !== 'string') return;
+
+    // Damage is a number or it is nothing. A junk value used to poison the
+    // victim's health with NaN, which made the liveness checks below
+    // permanently false and desynced the two clients.
+    const damage = Number(hitData.damage);
+    if (!Number.isFinite(damage) || damage <= 0) return;
+
     const targetId = hitData.targetId;
-    const damage = hitData.damage;
-    const headshot = hitData.headshot;
+    const headshot = Boolean(hitData.headshot);
     const targetPlayer = rooms[currentRoom].players[targetId];
-    
-    if (targetPlayer && !targetPlayer.dead) {
-      targetPlayer.health -= damage;
-      
-      if (targetPlayer.health <= 0) {
-        targetPlayer.health = 0;
-        targetPlayer.dead = true;
-        targetPlayer.deaths = (targetPlayer.deaths || 0) + 1;
-        
-        let matchFinished = false;
-        let winnerId = null;
-        
-        const killerPlayer = rooms[currentRoom].players[socket.id];
-        if (killerPlayer) {
-          killerPlayer.kills = (killerPlayer.kills || 0) + 1;
-          if (killerPlayer.kills >= rooms[currentRoom].targetScore) {
-            matchFinished = true;
-            winnerId = socket.id;
-            rooms[currentRoom].status = 'waiting';
-          }
-        }
-        
-        io.to(currentRoom).emit('playerDied', { 
-          victimId: targetId, 
-          killerId: socket.id, 
-          headshot: headshot 
-        });
-        io.to(currentRoom).emit('updateScores', rooms[currentRoom].players);
-        
-        if (matchFinished) {
-          io.to(currentRoom).emit('matchFinished', { winner: winnerId, stats: rooms[currentRoom].players });
-        }
-      } else {
-        io.to(targetId).emit('takeDamage', { 
-          damage: damage, 
-          attackerId: socket.id 
-        });
+    if (!targetPlayer) return;
+
+    const attacker = rooms[currentRoom].players[socket.id];
+    // Self hits and hits from outside the room are not damage events.
+    if (!attacker || targetId === socket.id) return;
+
+    // Already down: ignore, so a respawned victim can never be re-killed by a
+    // bullet that was fired before they died.
+    if (targetPlayer.dead) return;
+
+    // Health only. Hiding the victim is not tied to this branch.
+    targetPlayer.health = Math.max(0, targetPlayer.health - damage);
+
+    if (targetPlayer.health <= 0) {
+      targetPlayer.health = 0;
+      targetPlayer.dead = true;
+      targetPlayer.deaths = (targetPlayer.deaths || 0) + 1;
+
+      let matchFinished = false;
+      let winnerId = null;
+
+      attacker.kills = (attacker.kills || 0) + 1;
+      if (attacker.kills >= rooms[currentRoom].targetScore) {
+        matchFinished = true;
+        winnerId = socket.id;
+        rooms[currentRoom].status = 'waiting';
       }
+
+      scheduleRespawn(currentRoom, targetId);
+
+      io.to(currentRoom).emit('playerDied', {
+        victimId: targetId,
+        killerId: socket.id,
+        headshot: headshot
+      });
+      io.to(currentRoom).emit('updateScores', rooms[currentRoom].players);
+
+      if (matchFinished) {
+        io.to(currentRoom).emit('matchFinished', { winner: winnerId, stats: rooms[currentRoom].players });
+      }
+    } else {
+      io.to(targetId).emit('takeDamage', {
+        damage: damage,
+        attackerId: socket.id,
+        // The victim adopts the server's number instead of guessing its own,
+        // so both clients agree on how much health is left.
+        health: targetPlayer.health
+      });
     }
+
+    // Everyone re-reads liveness from the same authoritative snapshot.
+    io.to(currentRoom).emit('playerState', playerState(targetPlayer));
   });
-  
+
   socket.on('respawn', (spawnPoint) => {
-    if (currentRoom && rooms[currentRoom] && rooms[currentRoom].players[socket.id]) {
-      const player = rooms[currentRoom].players[socket.id];
-      player.health = 100;
-      player.dead = false;
-      player.x = spawnPoint.x;
-      player.y = spawnPoint.y;
-      player.z = spawnPoint.z;
-      io.to(currentRoom).emit('playerRespawned', player);
+    if (!currentRoom || !rooms[currentRoom]) return;
+    if (!rooms[currentRoom].players[socket.id]) return;
+    revivePlayer(currentRoom, socket.id, spawnPoint);
+  });
+
+  // A client that suspects it drifted can pull the authoritative snapshot back
+  // in. This is what makes the two views converge instead of staying stuck.
+  socket.on('requestPlayerState', () => {
+    if (!currentRoom || !rooms[currentRoom]) return;
+    for (const pid in rooms[currentRoom].players) {
+      socket.emit('playerState', playerState(rooms[currentRoom].players[pid]));
     }
   });
 });
