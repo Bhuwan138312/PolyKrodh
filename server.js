@@ -1,22 +1,37 @@
+import express from 'express';
 import { Server } from 'socket.io';
 import { createServer } from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const httpServer = createServer((req, res) => {
-  // Simple REST endpoint to get active public waiting rooms
-  if (req.method === 'GET' && req.url === '/rooms') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Content-Type', 'application/json');
-    
-    const roomList = Object.keys(rooms)
-      .filter(roomName => rooms[roomName].status === 'waiting')
-      .map(roomName => ({
-        name: roomName,
-        playerCount: Object.keys(rooms[roomName].players).length,
-        isPrivate: !!rooms[roomName].password
-      }));
-    
-    res.end(JSON.stringify(roomList));
-  }
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const httpServer = createServer(app);
+
+// Simple REST endpoint to get active public waiting rooms
+app.get('/rooms', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Content-Type', 'application/json');
+  
+  const roomList = Object.keys(rooms)
+    .filter(roomName => rooms[roomName].status === 'waiting')
+    .map(roomName => ({
+      name: roomName,
+      playerCount: Object.keys(rooms[roomName].players).length,
+      isPrivate: !!rooms[roomName].password
+    }));
+  
+  res.json(roomList);
+});
+
+// Serve static files from the 'dist' directory
+app.use(express.static(path.join(__dirname, 'dist')));
+
+// Send index.html for all other requests (SPA behavior)
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
 const io = new Server(httpServer, {

@@ -37,7 +37,10 @@ export class BotSpawner {
           }
         }
       }
-      if (!spawn) spawn = this.arena.botSpawns[i % this.arena.botSpawns.length].clone();
+      if (!spawn) {
+        spawn = this.arena.botSpawns[i % this.arena.botSpawns.length].clone();
+        if (this.arena.hasMapSpawns) spawn.setY(spawn.y + 1.5);
+      }
       spawnPoints.push(spawn);
     }
 

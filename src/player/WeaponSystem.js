@@ -436,17 +436,17 @@ export class WeaponSystem {
     // Sway and bob — amplified during reload for natural body movement
     const reloadSwayBoost = this.reloading ? 2.5 : 1;
     const lookSwayX = THREE.MathUtils.clamp(this.player.weaponSway?.x ?? 0, -1, 1)
-      * THREE.MathUtils.lerp(0.5, 0.1, this.adsAmount);
+      * THREE.MathUtils.lerp(0.05, 0.01, this.adsAmount); // Drastically reduced turning sway
     const lookSwayY = THREE.MathUtils.clamp(this.player.weaponSway?.y ?? 0, -1, 1)
-      * THREE.MathUtils.lerp(0.5, 0.1, this.adsAmount);
-    const sway = (Math.sin(this.player.bobDistance * 1.125) * 0.003 * movementFactor * adsSway
-      + lookSwayX * 0.005) * reloadSwayBoost;
-    const bob = (Math.sin(this.player.bobDistance * 2.25) * 0.002 * movementFactor * adsSway
-      - lookSwayY * 0.004) * reloadSwayBoost;
+      * THREE.MathUtils.lerp(0.05, 0.01, this.adsAmount); // Drastically reduced turning sway
+    const sway = (Math.sin(this.player.bobDistance * 1.125) * 0.001 * movementFactor * adsSway
+      + lookSwayX * 0.002) * reloadSwayBoost;
+    const bob = (Math.sin(this.player.bobDistance * 2.25) * 0.0015 * movementFactor * adsSway
+      - lookSwayY * 0.002) * reloadSwayBoost;
     // Running pitch pivot: barrel swings up and down
     const runTilt = 0;
     const runYaw = 0;
-    const runPitch = Math.sin(this.player.bobDistance * 1.125) * 0.02 * movementFactor * adsSway;
+    const runPitch = Math.sin(this.player.bobDistance * 1.125) * 0.01 * movementFactor * adsSway;
 
     // Sprint carry: gun rotates into an angled hold while running, swings from that offset
     const isPistol = this.displayName === 'Pistol';
@@ -457,8 +457,8 @@ export class WeaponSystem {
     const sprintBlend = this.sprintCarryAmount;
     const carryYaw = 0;
     const carryPitch = 0;
-    const carryOffsetX = sprintBlend * 0.015; // shift slightly right
-    const carryOffsetY = sprintBlend * -0.01; // drop slightly lower
+    const carryOffsetX = 0; // Removed horizontal shift when moving/sprinting
+    const carryOffsetY = sprintBlend * -0.005; // Less drop
 
     // Krunker-style: snappy, tight recoil kick with fast recovery
     // Pistol gets a stronger upward muzzle tip to simulate light-frame recoil

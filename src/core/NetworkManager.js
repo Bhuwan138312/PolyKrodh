@@ -14,7 +14,8 @@ export class NetworkManager {
   }
 
   connect(serverAddress, roomName = 'Lobby', password = '') {
-    const address = serverAddress || `http://${window.location.hostname}:3001`;
+    const serverPort = window.location.port === '5173' ? ':3001' : (window.location.port ? ':' + window.location.port : '');
+    const address = serverAddress || `${window.location.protocol}//${window.location.hostname}${serverPort}`;
     
     console.log(`Connecting to multiplayer server at: ${address}`);
     this.socket = io(address);
@@ -54,14 +55,14 @@ export class NetworkManager {
       this.hostId = data.host;
       if (data.status === 'playing' && !this.matchStarted) {
         this.matchStarted = true;
-        this.game.startMatch('normal', 'arena', true, false, roomName, true); // true at the end to signify match started
+        this.game.startMatch('normal', this.game.ui.map || 'arena', true, false, roomName, true); // true at the end to signify match started
       }
       if (!this.matchStarted) this.updateLobbyUI();
     });
 
     this.socket.on('matchStarted', () => {
       this.matchStarted = true;
-      this.game.startMatch('normal', 'arena', true, false, roomName, true);
+      this.game.startMatch('normal', this.game.ui.map || 'arena', true, false, roomName, true);
     });
 
     // When we first join, server sends us everyone already in the game

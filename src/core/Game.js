@@ -26,15 +26,35 @@ export class Game {
     this.pointerLockWasActive = false;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x8abdf2); // Bright afternoon sky
-    this.scene.fog = new THREE.Fog(0x8abdf2, 120, 350);
+    this.scene.background = new THREE.Color(0x1a1614); // Dark warehouse interior
+    this.scene.fog = new THREE.Fog(0x1a1614, 20, 150);
 
     this.camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.045, 500);
     this.camera.rotation.order = 'YXZ';
+
+    // Viewmodel fill light. The gun sits a few centimeters from the lens, so
+    // it's extremely sensitive to whatever angle the world sun/fill happen to
+    // be coming from — that's why it was reading dark/flat against a bright
+    // background. A small light parented to the camera keeps it evenly lit
+    // regardless of which way the player is facing.
+    // Note: using DirectionalLight rather than PointLight on purpose — in
+    // current three.js, PointLight/SpotLight intensity is in physical
+    // candela units, where a value like 1.4 is nearly invisible. Directional
+    // lights use the same simple unitless scale as the sun/fill above, so the
+    // intensity here behaves predictably.
+    this.viewmodelLight = new THREE.DirectionalLight(0xfff2d9, 1.2);
+    this.viewmodelLight.position.set(0.3, 0.6, 0.4); // relative to camera, up and slightly behind
+    this.viewmodelLightTarget = new THREE.Object3D();
+    this.viewmodelLightTarget.position.set(0, -0.3, -1); // aim down-forward, where the gun sits
+    this.viewmodelLight.target = this.viewmodelLightTarget;
+    this.viewmodelLight.castShadow = false;
+    this.camera.add(this.viewmodelLight);
+    this.camera.add(this.viewmodelLightTarget);
+    this.scene.add(this.camera); // camera must be in the scene graph for its children to render
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1;
+    this.renderer.toneMappingExposure = 1.05;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.applyGraphicsQuality(localStorage.getItem('graphicsQuality') || 'high');
@@ -48,6 +68,30 @@ export class Game {
     this.arena = new ArenaMap(this.scene);
     this.navigation = new NavigationGrid(this.arena);
     this.input = new InputManager(this.renderer.domElement);
+
+    // Global debug toggle for collision (Capsule + map triangles)
+    window.DEBUG_COLLISION = false;
+    window.toggleCollisionDebug = () => {
+      window.DEBUG_COLLISION = !window.DEBUG_COLLISION;
+      console.log('Collision Debug:', window.DEBUG_COLLISION);
+
+      if (window.DEBUG_COLLISION) {
+        if (!this.arena.debugWireframes) {
+          this.arena.debugWireframes = new THREE.Group();
+          this.scene.add(this.arena.debugWireframes);
+          for (const mesh of this.arena.modelMeshes || []) {
+            const wire = new THREE.Mesh(mesh.geometry, new THREE.MeshBasicMaterial({ color: 0x00ff00, wireframe: true, transparent: true, opacity: 0.3, depthTest: false }));
+            mesh.getWorldPosition(wire.position);
+            mesh.getWorldQuaternion(wire.quaternion);
+            mesh.getWorldScale(wire.scale);
+            this.arena.debugWireframes.add(wire);
+          }
+        }
+        this.arena.debugWireframes.visible = true;
+      } else if (this.arena.debugWireframes) {
+        this.arena.debugWireframes.visible = false;
+      }
+    };
     this.player = new PlayerController({
       scene: this.scene,
       camera: this.camera,
@@ -154,14 +198,16 @@ export class Game {
       hostMatch: (roomName, password) => {
         if (roomName) {
           this.isMultiplayer = true;
-          const address = `http://${window.location.hostname}:3001`;
+          const serverPort = window.location.port === '5173' ? ':3001' : (window.location.port ? ':' + window.location.port : '');
+          const address = `${window.location.protocol}//${window.location.hostname}${serverPort}`;
           this.network.connect(address, roomName, password);
         }
       },
       joinMatch: (roomName, password) => {
         if (roomName) {
           this.isMultiplayer = true;
-          const address = `http://${window.location.hostname}:3001`;
+          const serverPort = window.location.port === '5173' ? ':3001' : (window.location.port ? ':' + window.location.port : '');
+          const address = `${window.location.protocol}//${window.location.hostname}${serverPort}`;
           this.network.connect(address, roomName, password);
         }
       },
@@ -207,10 +253,21 @@ export class Game {
     this.bindLoop();
   }
 
+  updateEnvironment(mapName) {
+    if (mapName === 'smalltdm') {
+      this.scene.background = new THREE.Color(0x1a1614);
+      this.scene.fog = new THREE.Fog(0x1a1614, 20, 150);
+    } else {
+      this.scene.background = new THREE.Color(0xaed4f5); // Default daylight sky
+      this.scene.fog = new THREE.Fog(0xaed4f5, 120, 350);
+    }
+  }
+
   async init() {
     await this.arena.loadMapModel('arena');
     this.navigation.build(this.arena);
     this.currentMapName = 'arena';
+    this.updateEnvironment('arena');
 
     await Promise.all([this.primaryWeapon.ready, this.secondaryWeapon.ready]);
     requestAnimationFrame(() => {
@@ -236,6 +293,7 @@ export class Game {
       await this.arena.loadMapModel(mapName);
       this.navigation.build();
       this.currentMapName = mapName;
+      this.updateEnvironment(mapName);
     }
 
     if (!this.isMultiplayer) {
@@ -258,17 +316,17 @@ export class Game {
       w.reset();
     });
     this.activeWeapon.model.visible = true;
-    
+
     if (!this.isMultiplayer) {
       this.spawner.spawnMatch(this.player.root.position, this.difficulty);
     } else {
       this.spawner.clear();
     }
-    
+
     this.updateDynamicActors();
     this.ui.setHealth(this.player.health.current, this.player.health.maxHealth);
     this.ui.setAmmo(this.activeWeapon.magazine, this.activeWeapon.reserve, false, 0, this.activeWeapon.config);
-    
+
     if (this.isMultiplayer) {
       this.ui.enemiesValue.parentElement.style.display = 'none'; // Hide hostiles counter in PvP
     } else {
@@ -605,7 +663,7 @@ export class Game {
 
       this.arena.update(delta, this.elapsed);
       if (this.network) this.network.update(delta, this.elapsed * 1000);
-      
+
       this.effects.update(delta);
       this.audio.updateListener(this.camera);
       this.input.endFrame();

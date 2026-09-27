@@ -72,6 +72,31 @@ export class ArenaMap {
   loadMapModel(mapName = 'arena') {
     return new Promise((resolve, reject) => {
       console.log(`[ArenaMap] Loading new 3D map model: ${mapName}...`);
+
+      if (mapName === 'smallarena') {
+        this.playerSpawns = [
+          new THREE.Vector3(0, 0.08, 4),
+          new THREE.Vector3(0, 0.08, -4),
+        ];
+        this.botSpawns = [
+          new THREE.Vector3(4, 0.08, 4), new THREE.Vector3(-4, 0.08, 4),
+          new THREE.Vector3(4, 0.08, -4), new THREE.Vector3(-4, 0.08, -4),
+          new THREE.Vector3(0, 0.08, 0),
+        ];
+      } else {
+        this.playerSpawns = [
+          new THREE.Vector3(0, 0.08, 28),
+          new THREE.Vector3(3, 0.08, 28),
+        ];
+        this.botSpawns = [
+          new THREE.Vector3(0, 0.08, -29), new THREE.Vector3(-29, 0.08, -4),
+          new THREE.Vector3(29, 0.08, -3), new THREE.Vector3(-29, 0.08, 20),
+          new THREE.Vector3(29, 0.08, 20), new THREE.Vector3(-12, 0.08, -27),
+          new THREE.Vector3(12, 0.08, -27), new THREE.Vector3(-30, 0.08, 8),
+          new THREE.Vector3(30, 0.08, 8), new THREE.Vector3(0, 0.08, -10),
+        ];
+      }
+
       const loader = new GLTFLoader();
       loader.load(`/models/${mapName}.glb`, (gltf) => {
         if (this.currentMapModel) this.root.remove(this.currentMapModel);
@@ -85,16 +110,58 @@ export class ArenaMap {
 
         const model = gltf.scene;
         this.currentMapModel = model;
-        model.scale.set(1, 1, 1);
+
+        if (mapName === 'smallarena') {
+          model.scale.set(0.65, 0.65, 0.65); // Sweet spot for map scale
+        } else {
+          model.scale.set(1, 1, 1);
+        }
+
         this.root.add(model);
         this.root.updateMatrixWorld(true);
+        this.createLighting(mapName);
 
         const modelMeshes = [];
+        const foundSpawns = [];
+
         model.traverse((child) => {
+          const n = child.name.toLowerCase();
+          // Check for spawn points embedded in the map
+          if (n.includes('spawn') || n === '1.1' || n === '2.2') {
+            const pos = new THREE.Vector3();
+            child.getWorldPosition(pos);
+            foundSpawns.push(pos);
+            child.visible = false; // Hide the spawn point marker
+          }
+
           if (!child.isMesh) return;
           child.castShadow = true;
           child.receiveShadow = true;
+
+          if (n.includes('cube.006_0') || n.includes('cube.035_0') || n.includes('cube.007_0') ||
+            n.includes('dube.0035') || n.includes('sube.007') || n.includes('cube006') || n.includes('cube035') || n.includes('cube007')) {
+            child.scale.multiplyScalar(0.80); // A bit larger
+            child.updateMatrixWorld(true);
+          }
+
+          if (child.material) {
+            const mats = Array.isArray(child.material) ? child.material : [child.material];
+            mats.forEach(mat => {
+              if (mat.metalness !== undefined) mat.metalness = 0.1;
+              if (mat.roughness !== undefined) mat.roughness = 0.8;
+              if (mapName === 'smalltdm' && child.geometry && child.geometry.attributes.color) {
+                mat.vertexColors = true;
+              }
+
+              // Force FrontSide to fix severe shadow acne from GLB doubleSided exports
+              mat.side = THREE.FrontSide;
+              mat.shadowSide = THREE.BackSide;
+              mat.needsUpdate = true;
+            });
+          }
+
           modelMeshes.push(child);
+
 
           // AABBs are still useful for cover scoring; movement collision comes
           // from the triangle accurate world below, so coarse boxes are harmless.
@@ -114,6 +181,27 @@ export class ArenaMap {
           if (isSmallObject) this.coverColliders.push(collider);
         });
 
+        // Use custom spawns if the map provided them
+        if (foundSpawns.length > 0) {
+          this.playerSpawns = foundSpawns;
+          this.botSpawns = foundSpawns;
+          this.hasMapSpawns = true;
+        } else {
+          this.hasMapSpawns = false;
+        }
+
+        // Adjust shadow bias for the map to reduce any remaining acne
+        if (this.sun) {
+          if (mapName === 'smallarena') {
+            this.sun.shadow.normalBias = 0.2; // High normal bias for thin planes
+            this.sun.shadow.bias = -0.002;
+          } else {
+            this.sun.shadow.normalBias = 0.025;
+            this.sun.shadow.bias = -0.0004;
+          }
+        }
+
+        this.modelMeshes = modelMeshes;
         this.buildCollision(modelMeshes, [this.backupFloor]);
         console.log(
           `[ArenaMap] 3D map loaded: ${this.collision.triangleCount} collision triangles, `
@@ -143,34 +231,76 @@ export class ArenaMap {
     return this.collision;
   }
 
-  createLighting() {
-    // Afternoon ambient - neutral and bright
-    const ambient = new THREE.AmbientLight(0xffffff, 0.8);
-    this.scene.add(ambient);
+  createLighting(mapName = 'arena') {
+    if (this.lightGroup) {
+      this.scene.remove(this.lightGroup);
+    }
+    this.lightGroup = new THREE.Group();
+    this.scene.add(this.lightGroup);
 
-    // Hemisphere: Natural bright sky blue above, dark shadow bounce below
-    const hemisphere = new THREE.HemisphereLight(0x88bbff, 0x222233, 1.5);
-    this.scene.add(hemisphere);
+    if (mapName === 'smalltdm') {
+      // Dim, ambient light to simulate ambient warehouse bouncing
+      const ambient = new THREE.AmbientLight(0xffeedd, 0.15);
+      this.lightGroup.add(ambient);
 
-    // Afternoon Sun (bright pale yellow/white, high angle, crisp shadows)
-    const sun = new THREE.DirectionalLight(0xfff9e6, 3.8);
-    sun.position.set(-20, 45, 20); // Higher in the sky for afternoon
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    sun.shadow.camera.left = -42;
-    sun.shadow.camera.right = 42;
-    sun.shadow.camera.top = 42;
-    sun.shadow.camera.bottom = -42;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 350;
-    sun.shadow.bias = -0.0004;
-    sun.shadow.normalBias = 0.025;
-    this.scene.add(sun);
+      // Hemisphere: dim industrial ceiling bounce, dark floor bounce
+      const hemisphere = new THREE.HemisphereLight(0x555566, 0x1a1614, 0.4);
+      this.lightGroup.add(hemisphere);
 
-    // Natural sky fill light to balance the shadows and provide contrast
-    const fill = new THREE.DirectionalLight(0xaaccff, 1.2);
-    fill.position.set(30, 30, -25);
-    this.scene.add(fill);
+      // Big yellow light in the middle of the roof, softened based on feedback
+      const sun = new THREE.SpotLight(0xffe299, 15000);
+      sun.position.set(0, 45, 0);
+      sun.angle = Math.PI / 2.5;
+      sun.penumbra = 0.5;
+      sun.distance = 250;
+      sun.decay = 2;
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.camera.near = 10;
+      sun.shadow.camera.far = 100;
+      sun.shadow.camera.fov = 85;
+      sun.shadow.bias = -0.0004;
+      sun.shadow.normalBias = 0.025;
+
+      this.lightGroup.add(sun);
+
+      const target = new THREE.Object3D();
+      target.position.set(0, 0, 0);
+      this.lightGroup.add(target);
+      sun.target = target;
+      this.sun = sun;
+
+      // Fill light: very subtle, just to ensure shadows aren't pitch black
+      const fill = new THREE.DirectionalLight(0x445566, 0.3);
+      fill.position.set(20, 10, 20);
+      this.lightGroup.add(fill);
+    } else {
+      // Default daylight for large arena
+      const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+      this.lightGroup.add(ambient);
+
+      const hemisphere = new THREE.HemisphereLight(0xdcebff, 0x8f8578, 0.9);
+      this.lightGroup.add(hemisphere);
+
+      const sun = new THREE.DirectionalLight(0xfff6ea, 2.6);
+      sun.position.set(-20, 45, 20);
+      sun.castShadow = true;
+      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.camera.left = -42;
+      sun.shadow.camera.right = 42;
+      sun.shadow.camera.top = 42;
+      sun.shadow.camera.bottom = -42;
+      sun.shadow.camera.near = 1;
+      sun.shadow.camera.far = 350;
+      sun.shadow.bias = -0.0004;
+      sun.shadow.normalBias = 0.025;
+      this.lightGroup.add(sun);
+      this.sun = sun;
+
+      const fill = new THREE.DirectionalLight(0xdce8ff, 0.6);
+      fill.position.set(30, 30, -25);
+      this.lightGroup.add(fill);
+    }
   }
 
   createGround() {
@@ -629,6 +759,13 @@ export class ArenaMap {
   }
 
   getPlayerSpawn() {
+    if (this.hasMapSpawns) {
+      // Pick a random custom spawn point
+      const spawn = this.playerSpawns[Math.floor(Math.random() * this.playerSpawns.length)].clone();
+      // Raise by 1.5m to ensure they drop safely onto the floor instead of clipping through it
+      return spawn.setY(spawn.y + 1.5);
+    }
+
     const fallback = this.playerSpawns[Math.floor(Math.random() * this.playerSpawns.length)].clone();
     let best = null;
 
@@ -879,4 +1016,3 @@ function smallStepCount(height) {
 function indexSeed(value) {
   return (Math.abs(Math.sin(value * 12.9898) * 43758.5453) % 1);
 }
-

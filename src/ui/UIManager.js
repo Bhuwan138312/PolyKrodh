@@ -42,6 +42,7 @@ export class UIManager {
     this.controlsOverlay = document.querySelector('#controls-overlay');
     this.fpsCounter = document.querySelector('#fps-counter');
     this.difficulty = 'normal';
+    this.map = 'arena';
     this.callbacks = {};
     this.hitMarkerTimer = 0;
     this.killTimers = new Set();
@@ -62,10 +63,19 @@ export class UIManager {
       });
     });
 
+    document.querySelectorAll('.krunker-map-card[data-map]').forEach((button) => {
+      button.addEventListener('click', () => {
+        this.audio.resume();
+        this.audio.play('ui');
+        this.map = button.dataset.map;
+        document.querySelectorAll('.krunker-map-card[data-map]').forEach((item) => item.style.borderColor = (item === button) ? 'var(--color-primary)' : 'transparent');
+      });
+    });
+
 
 
     const actions = [
-      ['#play-button', () => this.callbacks.startMatch?.(this.difficulty, 'arena')],
+      ['#play-button', () => this.callbacks.startMatch?.(this.difficulty, this.map)],
       ['#host-button', () => this.show('host')],
       ['#host-cancel-btn', () => this.show('menu')],
       ['#host-confirm-btn', () => {
@@ -230,7 +240,9 @@ export class UIManager {
     container.innerHTML = '<div style="color: rgba(255,255,255,0.5); text-align: center; margin-top: 20px;">LOADING SERVERS...</div>';
     
     try {
-      const res = await fetch(`http://${window.location.hostname}:3001/rooms`);
+      const serverPort = window.location.port === '5173' ? ':3001' : (window.location.port ? ':' + window.location.port : '');
+      const baseUrl = `${window.location.protocol}//${window.location.hostname}${serverPort}`;
+      const res = await fetch(`${baseUrl}/rooms`);
       const rooms = await res.json();
       this.currentRooms = rooms;
       this.renderRoomList(rooms, searchInput.value);

@@ -94,28 +94,34 @@
         <h1><span>POLY</span><strong>KRODH</strong></h1>
         <p class="tagline">ONE ARENA. ZERO HESITATION.</p>
 
-        <div class="mission-brief">
-          <div><span>01</span>
-            <p>Clear every hostile</p>
-          </div>
-          <div><span>02</span>
-            <p>Use cover, keep moving</p>
-          </div>
-          <div><span>03</span>
-            <p>Survive the encounter</p>
+        <div class="difficulty-block" style="margin-bottom: 20px;">
+          <div class="section-label">SELECT MAP</div>
+          <div class="krunker-map-grid" role="group" aria-label="Map" style="display: flex; gap: 12px; height: 120px;">
+            <button class="krunker-map-card active" data-map="arena" style="flex: 1; background: #1a1f26 url('/models/arena.jpg') center/cover no-repeat; position: relative; border: 2px solid #8abdf2; border-radius: 4px; overflow: hidden; cursor: pointer; transition: all 0.2s; padding: 0; outline: none; display: flex; align-items: flex-end;">
+              <div style="width: 100%; background: linear-gradient(to top, rgba(0,0,0,0.9), transparent); padding: 25px 10px 10px 10px; text-align: left; transition: background 0.2s;">
+                <div style="font-family: var(--font-header); font-size: 18px; color: #fff; line-height: 1;">MAIN ARENA</div>
+                <div style="font-family: var(--font-mono); font-size: 10px; color: var(--color-primary); letter-spacing: 1px; margin-top: 4px;">LARGE</div>
+              </div>
+            </button>
+            <button class="krunker-map-card" data-map="smallarena" style="flex: 1; background: #1a1f26 url('/models/smallarena.jpg') center/cover no-repeat; position: relative; border: 2px solid transparent; border-radius: 4px; overflow: hidden; cursor: pointer; transition: all 0.2s; padding: 0; outline: none; display: flex; align-items: flex-end;">
+              <div style="width: 100%; background: linear-gradient(to top, rgba(0,0,0,0.9), transparent); padding: 25px 10px 10px 10px; text-align: left; transition: background 0.2s;">
+                <div style="font-family: var(--font-header); font-size: 18px; color: #fff; line-height: 1;">SMALL ARENA</div>
+                <div style="font-family: var(--font-mono); font-size: 10px; color: var(--color-primary); letter-spacing: 1px; margin-top: 4px;">COMPACT</div>
+              </div>
+            </button>
           </div>
         </div>
-
 
         <div class="difficulty-block">
           <div class="section-label">SELECT THREAT LEVEL</div>
-          <div class="difficulty-options" role="group" aria-label="Difficulty">
-            <button class="difficulty-button" data-difficulty="training">TRAIN<small>0 HOSTILES</small></button>
-            <button class="difficulty-button" data-difficulty="easy">EASY<small>15 HOSTILES</small></button>
-            <button class="difficulty-button active" data-difficulty="normal">NORMAL<small>20 HOSTILES</small></button>
-            <button class="difficulty-button" data-difficulty="hard">HARD<small>25 HOSTILES</small></button>
+          <div class="difficulty-options" role="group" aria-label="Difficulty" style="display: flex; gap: 8px;">
+            <button class="difficulty-button" data-difficulty="training" style="flex: 1;">TRAIN<small>0 HOSTILES</small></button>
+            <button class="difficulty-button active" data-difficulty="easy" style="flex: 1;">EASY<small>15 HOSTILES</small></button>
+            <button class="difficulty-button" data-difficulty="hard" style="flex: 1;">HARD<small>25 HOSTILES</small></button>
           </div>
         </div>
+
+
 
         <div class="menu-actions" style="display: flex; flex-direction: column; gap: 15px;">
           <div style="display: flex; gap: 8px;">

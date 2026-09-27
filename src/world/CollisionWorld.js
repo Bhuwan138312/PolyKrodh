@@ -135,12 +135,30 @@ function cylinderOverlapsTriangle(x, yBottom, yTop, z, radiusSq, tri) {
   const ax = tri.a.x, az = tri.a.z;
   const bx = tri.b.x, bz = tri.b.z;
   const cx = tri.c.x, cz = tri.c.z;
+
+  const nx = (y1 - y0) * (cz - az) - (bz - az) * (y2 - y0);
+  const nz = (bx - ax) * (y2 - y0) - (y1 - y0) * (cx - ax);
+  const ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az);
+  
+  if (Math.abs(ny) > 1e-6) {
+    const yCenter = y0 - (nx * (x - ax) + nz * (z - az)) / ny;
+    const ySpread = Math.sqrt(radiusSq * (nx * nx + nz * nz)) / Math.abs(ny);
+    if (yCenter + ySpread < yBottom) return false;
+    if (yCenter - ySpread > yTop) return false;
+  }
+
   if (axisCrossesTriangleXZ(x, z, ax, az, bx, bz, cx, cz)) return true;
   if (pointTriangleDistanceSqXZ(x, z, ax, az, bx, bz, cx, cz) >= radiusSq) return false;
 
   if (segmentSegmentDistanceSq(x, yBottom, z, x, yTop, z, ax, y0, az, bx, y1, bz) < radiusSq) return true;
   if (segmentSegmentDistanceSq(x, yBottom, z, x, yTop, z, bx, y1, bz, cx, y2, cz) < radiusSq) return true;
   if (segmentSegmentDistanceSq(x, yBottom, z, x, yTop, z, cx, y2, cz, ax, y0, az) < radiusSq) return true;
+
+  // Fix for vertical walls: if the triangle is vertical, the XZ axis cross test fails,
+  // and the edges might be further than radius. But if it passed the XZ footprint test 
+  // and Y bounds test above, the cylinder is penetrating the flat face of the wall!
+  if (ny * ny < (nx * nx + nz * nz) * 0.001) return true;
+
   return false;
 }
 
@@ -435,6 +453,56 @@ export class CollisionWorld {
       if (blocked) return true;
     }
     return false;
+  }
+
+  /**
+   * Continuous-ish exact capsule collision.
+   * Returns an array of penetrations: { depth, normal, point }
+   */
+  collideCapsule(capsuleLine, radius) {
+    if (!this.ready) return [];
+    
+    const penetrations = [];
+    const minX = Math.min(capsuleLine.start.x, capsuleLine.end.x) - radius;
+    const maxX = Math.max(capsuleLine.start.x, capsuleLine.end.x) + radius;
+    const minY = Math.min(capsuleLine.start.y, capsuleLine.end.y) - radius;
+    const maxY = Math.max(capsuleLine.start.y, capsuleLine.end.y) + radius;
+    const minZ = Math.min(capsuleLine.start.z, capsuleLine.end.z) - radius;
+    const maxZ = Math.max(capsuleLine.start.z, capsuleLine.end.z) + radius;
+
+    const candidates = this._collectChunks(minX, minY, minZ, maxX, maxY, maxZ);
+    if (candidates.length === 0) return penetrations;
+
+    const triPoint = new THREE.Vector3();
+    const capPoint = new THREE.Vector3();
+
+    for (let c = 0; c < candidates.length; c += 1) {
+      const chunk = this.chunks[candidates[c]];
+      const bounds = chunk.bounds;
+      if (bounds.max.x < minX || bounds.min.x > maxX) continue;
+      if (bounds.max.y < minY || bounds.min.y > maxY) continue;
+      if (bounds.max.z < minZ || bounds.min.z > maxZ) continue;
+      
+      chunk.bvh.shapecast({
+        intersectsBounds: (nodeBox) => (
+          nodeBox.max.x >= minX && nodeBox.min.x <= maxX
+          && nodeBox.max.y >= minY && nodeBox.min.y <= maxY
+          && nodeBox.max.z >= minZ && nodeBox.min.z <= maxZ
+        ),
+        intersectsTriangle: (triangle) => {
+          const distance = triangle.closestPointToSegment(capsuleLine, triPoint, capPoint);
+          if (distance < radius && distance > 1e-7) {
+             const depth = radius - distance;
+             const normal = capPoint.clone().sub(triPoint).normalize();
+             penetrations.push({ depth, normal, point: triPoint.clone() });
+          } else if (distance <= 1e-7) {
+             // Deep penetration / exact intersection. Handle fallback.
+             penetrations.push({ depth: radius, normal: new THREE.Vector3(0, 1, 0), point: triPoint.clone() });
+          }
+        },
+      });
+    }
+    return penetrations;
   }
 
   /**

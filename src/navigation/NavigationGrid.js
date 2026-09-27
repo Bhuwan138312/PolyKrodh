@@ -90,8 +90,16 @@ export class NavigationGrid {
 
   buildReachableComponent() {
     let start = -1;
-    const preferred = this.index(this.worldToCell(0), this.worldToCell(28));
+    // Prefer to start flood fill at the first player spawn to guarantee the interior is marked reachable
+    const defaultSpawn = this.arena?.playerSpawns?.[0] || { x: 0, z: 0 };
+    const preferred = this.index(this.worldToCell(defaultSpawn.x), this.worldToCell(defaultSpawn.z));
+    
     if (this.blocked[preferred] === 0) start = preferred;
+    if (start < 0) {
+      // Try (0,0) as a fallback interior point
+      const origin = this.index(this.worldToCell(0), this.worldToCell(0));
+      if (this.blocked[origin] === 0) start = origin;
+    }
     if (start < 0) {
       for (let index = 0; index < this.blocked.length; index += 1) {
         if (this.blocked[index] === 0) {
