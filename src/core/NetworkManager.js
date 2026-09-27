@@ -55,14 +55,14 @@ export class NetworkManager {
       this.hostId = data.host;
       if (data.status === 'playing' && !this.matchStarted) {
         this.matchStarted = true;
-        this.game.startMatch('normal', this.game.ui.map || 'arena', true, false, roomName, true); // true at the end to signify match started
+        this.game.startMatch('normal', data.map || 'arena', true, false, roomName, true);
       }
       if (!this.matchStarted) this.updateLobbyUI();
     });
 
-    this.socket.on('matchStarted', () => {
+    this.socket.on('matchStarted', (mapName) => {
       this.matchStarted = true;
-      this.game.startMatch('normal', this.game.ui.map || 'arena', true, false, roomName, true);
+      this.game.startMatch('normal', mapName || 'arena', true, false, roomName, true);
     });
 
     // When we first join, server sends us everyone already in the game
@@ -74,6 +74,20 @@ export class NetworkManager {
         if (id === this.socket.id) return; // Don't add ourselves
         this.addRemotePlayer(players[id]);
       });
+      if (this.matchStarted) {
+        let myKills = 0, myDeaths = 0, otherKills = 0, otherDeaths = 0, otherCount = 0;
+        for (const id in players) {
+          if (id === this.socket.id) {
+            myKills = players[id].kills || 0;
+            myDeaths = players[id].deaths || 0;
+          } else {
+            otherKills += players[id].kills || 0;
+            otherDeaths += players[id].deaths || 0;
+            otherCount++;
+          }
+        }
+        this.game.ui.updateMultiplayerScores(myKills, myDeaths, otherKills, otherDeaths, otherCount);
+      }
     });
 
     // When a new player joins while we are already in
@@ -133,6 +147,27 @@ export class NetworkManager {
           this.game.ui.announceKill('Player ' + data.victimId.substring(0, 4));
         }
       }
+    });
+
+    this.socket.on('updateScores', (players) => {
+      let myKills = 0, myDeaths = 0, otherKills = 0, otherDeaths = 0;
+      let otherCount = 0;
+      for (const pid in players) {
+        if (pid === this.socket.id) {
+          myKills = players[pid].kills || 0;
+          myDeaths = players[pid].deaths || 0;
+        } else {
+          otherKills += players[pid].kills || 0;
+          otherDeaths += players[pid].deaths || 0;
+          otherCount++;
+        }
+      }
+      this.game.ui.updateMultiplayerScores(myKills, myDeaths, otherKills, otherDeaths, otherCount);
+    });
+
+    this.socket.on('matchFinished', (data) => {
+      this.matchStarted = false;
+      this.game.finishMultiplayerMatch(data.winner, data.stats);
     });
 
     // When someone respawns

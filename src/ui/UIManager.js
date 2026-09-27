@@ -339,6 +339,24 @@ export class UIManager {
     this.enemiesValue.textContent = String(count).padStart(2, '0');
   }
 
+  updateMultiplayerScores(myKills, myDeaths, otherKills, otherDeaths, otherCount) {
+    const chip = this.enemiesValue.parentElement;
+    if (chip) {
+      chip.classList.add('tdm-mode');
+      const label = chip.querySelector('span:nth-child(2)');
+      const dot = chip.querySelector('.pulse-dot');
+      if (dot) dot.style.display = 'none'; // Hide the pulse dot in TDM mode
+      
+      if (label) {
+        if (otherCount === 1) {
+          label.textContent = `YOU ${myKills} - ${otherKills} ENEMY`;
+        } else {
+          label.textContent = `KILLS ${myKills} - DEATHS ${myDeaths}`;
+        }
+      }
+      this.enemiesValue.textContent = '';
+    }
+  }
   setAmmo(magazine, reserve, reloading = false, elapsed = 0, currentWeaponConfig = null) {
     const config = currentWeaponConfig || this.weaponConfig;
     this.ammoLabel.childNodes[0].nodeValue = `${magazine} / `;
@@ -423,6 +441,16 @@ export class UIManager {
     this.killTimers.forEach((timer) => clearTimeout(timer));
     this.killTimers.clear();
     this.killFeed.replaceChildren();
+    
+    const chip = this.enemiesValue.parentElement;
+    if (chip) {
+      chip.classList.remove('tdm-mode');
+      const label = chip.querySelector('span:nth-child(2)');
+      const dot = chip.querySelector('.pulse-dot');
+      if (label) label.textContent = 'HOSTILES';
+      if (dot) dot.style.display = 'block';
+    }
+
     this.hitMarker.classList.remove('active', 'headshot');
     this.reloadPrompt.classList.remove('visible');
     this.damageVignette.style.opacity = '0';
@@ -441,6 +469,26 @@ export class UIManager {
     document.querySelector('#end-health').textContent = `${Math.ceil(health)}%`;
     document.querySelector('#again-button span').textContent = won ? 'PLAY AGAIN' : 'TRY AGAIN';
     document.querySelector('#end-screen').classList.toggle('victory', won);
+    this.show('end');
+  }
+  showMultiplayerEnd(winnerId, stats, localId) {
+    const title = document.querySelector('#end-title');
+    const subtitle = document.querySelector('#end-subtitle');
+    const kicker = document.querySelector('#end-kicker');
+    
+    const isWinner = winnerId === localId;
+    title.textContent = isWinner ? 'VICTORY' : 'DEFEAT';
+    subtitle.textContent = isWinner ? 'MATCH WON' : 'MATCH LOST';
+    kicker.textContent = 'MULTIPLAYER REPORT';
+    
+    const myStats = stats[localId];
+    document.querySelector('#end-kills').textContent = `${myStats ? myStats.kills || 0 : 0} KILLS`;
+    document.querySelector('#end-health').textContent = `${myStats ? myStats.deaths || 0 : 0} DEATHS`;
+    
+    const againBtn = document.querySelector('#again-button span');
+    againBtn.textContent = 'RETURN TO LOBBY';
+    
+    document.querySelector('#end-screen').classList.toggle('victory', isWinner);
     this.show('end');
   }
 }

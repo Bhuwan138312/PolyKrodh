@@ -213,7 +213,7 @@ export class Game {
       },
       startGame: () => {
         if (this.network && this.network.socket) {
-          this.network.socket.emit('startGame');
+          this.network.socket.emit('startGame', this.ui.map);
         }
       },
       leaveLobby: () => {
@@ -222,7 +222,13 @@ export class Game {
         this.ui.show('menu');
       },
       resume: () => this.resume(),
-      restart: () => this.startMatch(this.difficultyKey, this.currentMapName),
+      restart: () => {
+        if (this.isMultiplayer) {
+          this.ui.show('lobby');
+        } else {
+          this.startMatch(this.difficultyKey, this.currentMapName);
+        }
+      },
       showMenu: () => this.showMenu(),
       quit: () => this.quit(),
       setSensitivity: (value) => this.input.setSensitivity(value),
@@ -545,7 +551,26 @@ export class Game {
   playerDiedLocally(killerId) {
     if (this.outcome !== null) return;
     this.player.health.current = 0;
-    this.queueOutcome(false);
+    
+    if (this.isMultiplayer) {
+      this.ui.announceKill('You were killed!');
+      // Wait 3 seconds, then respawn
+      setTimeout(() => {
+        if (this.state !== 'PLAYING') return;
+        // Find killer's position to avoid spawning near them
+        let avoidPosition = null;
+        if (killerId && this.network && this.network.remotePlayers.has(killerId)) {
+          avoidPosition = this.network.remotePlayers.get(killerId).mesh.position;
+        }
+        const newSpawn = this.arena.getPlayerSpawn(avoidPosition);
+        this.player.reset(newSpawn);
+        if (this.network && this.network.socket) {
+           this.network.socket.emit('respawn', { x: newSpawn.x, y: newSpawn.y, z: newSpawn.z });
+        }
+      }, 3000);
+    } else {
+      this.queueOutcome(false);
+    }
   }
 
   finishOutcome() {
@@ -553,6 +578,12 @@ export class Game {
     this.state = won ? 'WON' : 'LOST';
     this.ui.showEnd(won, this.kills, this.difficulty.count, this.player.health.current);
     this.audio.play(won ? 'victory' : 'defeat');
+  }
+
+  finishMultiplayerMatch(winnerId, stats) {
+    this.state = 'WON'; // Just an end state
+    this.ui.showMultiplayerEnd(winnerId, stats, this.network.socket.id);
+    this.audio.play(winnerId === this.network.socket.id ? 'victory' : 'defeat');
   }
 
   updateMenuCamera(delta) {

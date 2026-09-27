@@ -10,6 +10,7 @@ export class HealthSystem {
   reset() {
     this.current = this.maxHealth;
     this.dead = false;
+    this.onDamage?.(0, this.current);
   }
 
   damage(amount) {

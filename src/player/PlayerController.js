@@ -56,9 +56,11 @@ export class PlayerController {
     this.health = new HealthSystem(
       this.config.health,
       (amount, current) => {
-        this.damageFlash = 1;
-        this.shake = Math.min(1.2, this.shake + 0.5);
-        this.audio.play('damage');
+        if (amount > 0) {
+          this.damageFlash = 1;
+          this.shake = Math.min(1.2, this.shake + 0.5);
+          this.audio.play('damage');
+        }
         this.onHealthChanged?.(current, amount);
       },
       () => this.onDeath?.(),
@@ -66,6 +68,7 @@ export class PlayerController {
   }
 
   reset(spawn) {
+    this.health.reset();
     this.root.position.copy(spawn);
     this.root.rotation.set(0, 0, 0);
     this.camera.position.set(0, this.config.eyeHeight, 0);

@@ -732,6 +732,27 @@ button {
   color: #b8cac7;
   font-size: 0.61rem;
   letter-spacing: 0.13em;
+  transition: all 0.3s ease;
+}
+
+.objective-chip.tdm-mode {
+  min-width: 350px;
+  padding: 12px 24px;
+  background: rgba(5, 20, 28, 0.85);
+  border: 2px solid var(--amber);
+  border-radius: 4px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5), 0 0 10px rgba(242, 196, 92, 0.2);
+}
+
+.objective-chip.tdm-mode span:nth-child(2) {
+  width: 100%;
+  text-align: center;
+  font-family: "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+  font-size: 1.8rem;
+  font-weight: 700;
+  color: var(--white);
+  letter-spacing: 0.05em;
+  text-shadow: 0 2px 4px rgba(0,0,0,0.8);
 }
 
 .objective-chip strong {

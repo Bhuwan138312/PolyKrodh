@@ -758,10 +758,22 @@ export class ArenaMap {
     return null;
   }
 
-  getPlayerSpawn() {
+  getPlayerSpawn(avoidPosition = null) {
     if (this.hasMapSpawns) {
-      // Pick a random custom spawn point
-      const spawn = this.playerSpawns[Math.floor(Math.random() * this.playerSpawns.length)].clone();
+      let selectedSpawn = this.playerSpawns[Math.floor(Math.random() * this.playerSpawns.length)];
+      
+      if (avoidPosition && this.playerSpawns.length > 1) {
+        let maxDist = -1;
+        for (const spawn of this.playerSpawns) {
+          const dist = spawn.distanceToSquared(avoidPosition);
+          if (dist > maxDist) {
+            maxDist = dist;
+            selectedSpawn = spawn;
+          }
+        }
+      }
+      
+      const spawn = selectedSpawn.clone();
       // Raise by 1.5m to ensure they drop safely onto the floor instead of clipping through it
       return spawn.setY(spawn.y + 1.5);
     }

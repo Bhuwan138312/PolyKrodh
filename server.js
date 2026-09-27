@@ -92,7 +92,9 @@ io.on('connection', (socket) => {
       rx: 0, ry: 0,
       health: 100,
       dead: false,
-      weaponIndex: 0
+      weaponIndex: 0,
+      kills: 0,
+      deaths: 0
     };
 
     console.log(`Player ${socket.id} joined room ${roomName} (Host: ${rooms[roomName].host === socket.id})`);
@@ -101,7 +103,8 @@ io.on('connection', (socket) => {
     socket.emit('currentPlayers', rooms[roomName].players);
     socket.emit('roomStatus', { 
       host: rooms[roomName].host, 
-      status: rooms[roomName].status 
+      status: rooms[roomName].status,
+      map: rooms[roomName].map 
     });
 
     // Broadcast to all OTHER players in the room that a new player joined
@@ -110,10 +113,21 @@ io.on('connection', (socket) => {
     if (callback) callback({ success: true, room: roomName, isHost: rooms[roomName].host === socket.id });
   });
 
-  socket.on('startGame', () => {
+  socket.on('startGame', (mapName) => {
     if (currentRoom && rooms[currentRoom] && rooms[currentRoom].host === socket.id) {
       rooms[currentRoom].status = 'playing';
-      io.to(currentRoom).emit('matchStarted');
+      rooms[currentRoom].map = mapName;
+      
+      const playerCount = Object.keys(rooms[currentRoom].players).length;
+      rooms[currentRoom].targetScore = playerCount <= 2 ? 10 : playerCount * 10;
+      
+      // Reset kills and deaths on start
+      for (const pid in rooms[currentRoom].players) {
+        rooms[currentRoom].players[pid].kills = 0;
+        rooms[currentRoom].players[pid].deaths = 0;
+      }
+      io.to(currentRoom).emit('matchStarted', mapName);
+      io.to(currentRoom).emit('updateScores', rooms[currentRoom].players);
     }
   });
 
@@ -177,12 +191,31 @@ io.on('connection', (socket) => {
       if (targetPlayer.health <= 0) {
         targetPlayer.health = 0;
         targetPlayer.dead = true;
+        targetPlayer.deaths = (targetPlayer.deaths || 0) + 1;
+        
+        let matchFinished = false;
+        let winnerId = null;
+        
+        const killerPlayer = rooms[currentRoom].players[socket.id];
+        if (killerPlayer) {
+          killerPlayer.kills = (killerPlayer.kills || 0) + 1;
+          if (killerPlayer.kills >= rooms[currentRoom].targetScore) {
+            matchFinished = true;
+            winnerId = socket.id;
+            rooms[currentRoom].status = 'waiting';
+          }
+        }
         
         io.to(currentRoom).emit('playerDied', { 
           victimId: targetId, 
           killerId: socket.id, 
           headshot: headshot 
         });
+        io.to(currentRoom).emit('updateScores', rooms[currentRoom].players);
+        
+        if (matchFinished) {
+          io.to(currentRoom).emit('matchFinished', { winner: winnerId, stats: rooms[currentRoom].players });
+        }
       } else {
         io.to(targetId).emit('takeDamage', { 
           damage: damage, 
