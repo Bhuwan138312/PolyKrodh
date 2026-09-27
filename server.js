@@ -30,7 +30,7 @@ app.get('/rooms', (req, res) => {
 app.use(express.static(path.join(__dirname, 'dist')));
 
 // Send index.html for all other requests (SPA behavior)
-app.get('*', (req, res) => {
+app.use((req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
