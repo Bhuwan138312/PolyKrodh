@@ -1,4 +1,4 @@
-# POLY STRIKE
+# POLY KRODH
 
 A complete low-poly arena FPS built with Three.js and Vite. Fight three classes of AI bots across a compact city block, use cover and flanking routes, and clear the arena before the enemy does. The player weapon uses the supplied `m416.glb` model.
 

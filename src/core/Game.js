@@ -40,7 +40,7 @@ export class Game {
     this.applyGraphicsQuality(localStorage.getItem('graphicsQuality') || 'high');
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.domElement.id = 'game-canvas';
-    this.renderer.domElement.setAttribute('aria-label', 'Poly Strike 3D arena');
+    this.renderer.domElement.setAttribute('aria-label', 'PolyKrodh 3D arena');
     container.querySelector('#viewport').appendChild(this.renderer.domElement);
 
     this.audio = new AudioManager();
