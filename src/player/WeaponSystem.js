@@ -104,7 +104,11 @@ export class WeaponSystem {
     this.buildModel();
     this.addWeaponLighting();
 
-    this.fireMode = (this.displayName === 'Pistol' || this.config.singleShot) ? 'single' : 'auto';
+    // The shotgun is pump-fed: holding the trigger keeps firing at its
+    // fireInterval, it is not one shot per click.
+    this.fireMode = this.isShotgun ? 'auto'
+      : (this.displayName === 'Pistol' || this.config.singleShot) ? 'single'
+        : 'auto';
     this.fireWasPressed = false;
 
     this.ready = this.loadConfiguredModel();

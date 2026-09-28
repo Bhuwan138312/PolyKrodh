@@ -91,11 +91,12 @@ export const GAME_CONFIG = Object.freeze({
     magazineSize: 5,
     reserveSize: 30,
     maxReserve: 60,
-    // Minimum time between two trigger pulls (~4.5 shells a second).
-    fireInterval: 0.22,
+    // Minimum time between two shots while the trigger is held (~3 shells a
+    // second). Holding the trigger keeps pumping at this rate.
+    fireInterval: 0.32,
     // Per shell. The real reload length is derived from how many are missing,
-    // so a full tube refills in 5 x 0.15 = 0.75s.
-    reloadDuration: 0.15,
+    // so a full tube refills in 5 x 0.24 = 1.2s.
+    reloadDuration: 0.24,
     bodyDamage: 112,
     headDamage: 168,
     range: 60,
@@ -156,7 +157,7 @@ export const GAME_CONFIG = Object.freeze({
       // The ammo is handed over by WeaponSystem itself, so a model without a
       // usable shell-insert point still reloads correctly.
       shellReload: {
-        shellDuration: 0.15,
+        shellDuration: 0.24,
       },
     },
   },

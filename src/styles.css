@@ -1059,9 +1059,9 @@ button {
  * wide gap that tracks the pellet cone (set from JS via --cross-gap).
  */
 .crosshair.shotgun-mode {
-  --cross-gap: 15px;
-  width: 68px;
-  height: 68px;
+  --cross-gap: 22px;
+  width: 84px;
+  height: 84px;
 }
 
 .crosshair.shotgun-mode .ch-dot {
@@ -1070,32 +1070,32 @@ button {
 
 .crosshair.shotgun-mode .ch-top,
 .crosshair.shotgun-mode .ch-bottom {
-  left: 32px;
+  left: 40px;
   width: 3px;
-  height: 13px;
+  height: 16px;
 }
 
 .crosshair.shotgun-mode .ch-top {
-  top: calc(34px - var(--cross-gap));
+  top: calc(42px - var(--cross-gap));
 }
 
 .crosshair.shotgun-mode .ch-bottom {
-  bottom: calc(34px - var(--cross-gap));
+  bottom: calc(42px - var(--cross-gap));
 }
 
 .crosshair.shotgun-mode .ch-left,
 .crosshair.shotgun-mode .ch-right {
-  top: 32px;
-  width: 13px;
+  top: 40px;
+  width: 16px;
   height: 3px;
 }
 
 .crosshair.shotgun-mode .ch-left {
-  left: calc(34px - var(--cross-gap));
+  left: calc(42px - var(--cross-gap));
 }
 
 .crosshair.shotgun-mode .ch-right {
-  right: calc(34px - var(--cross-gap));
+  right: calc(42px - var(--cross-gap));
 }
 
 .hit-marker {
