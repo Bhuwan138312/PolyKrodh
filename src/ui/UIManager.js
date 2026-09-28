@@ -27,6 +27,9 @@ export class UIManager {
     this.reloadPrompt = document.querySelector('#reload-prompt');
     this.damageVignette = document.querySelector('#damage-vignette');
     this.crosshair = document.querySelector('#crosshair');
+    // Gap = base + spread * scale. The shotgun's own values describe the much
+    // wider pellet cone; see setCrosshairStyle.
+    this.crosshairSpread = { base: 4, scale: 650 };
     this.hitMarker = document.querySelector('#hit-marker');
     this.weaponName = document.querySelector('#weapon-name');
     this.weaponOutlines = [
@@ -358,12 +361,14 @@ export class UIManager {
       this.enemiesValue.textContent = '';
     }
   }
-  setAmmo(magazine, reserve, reloading = false, elapsed = 0, currentWeaponConfig = null) {
+  setAmmo(magazine, reserve, reloading = false, elapsed = 0, currentWeaponConfig = null, reloadDuration = null) {
     const config = currentWeaponConfig || this.weaponConfig;
     this.ammoLabel.childNodes[0].nodeValue = `${magazine} / `;
     const span = this.ammoLabel.querySelector('span');
     if (span) span.textContent = String(reserve);
-    this.ammoLabel.classList.toggle('low', magazine <= 7);
+    // A shotgun only holds 5, so a fixed "nearly empty" mark of 7 would paint
+    // the counter red at all times; its own threshold is used instead.
+    this.ammoLabel.classList.toggle('low', magazine <= (config.lowAmmoThreshold ?? 7));
     const hasReserve = reserve > 0;
     this.reloadPrompt.classList.toggle('visible', !reloading && magazine === 0 && hasReserve);
     this.reloadCopy.textContent = reloading
@@ -371,7 +376,8 @@ export class UIManager {
       : magazine === 0
         ? (hasReserve ? 'MAGAZINE EMPTY' : 'NO AMMO')
         : 'R  RELOAD';
-    this.reloadFill.style.transform = `scaleX(${reloading ? Math.min(1, elapsed / config.reloadDuration) : magazine / config.magazineSize})`;
+    const duration = reloadDuration ?? config.reloadDuration;
+    this.reloadFill.style.transform = `scaleX(${reloading ? Math.min(1, elapsed / duration) : magazine / config.magazineSize})`;
   }
 
   setActiveWeaponIcon(index, displayName = '') {
@@ -381,6 +387,22 @@ export class UIManager {
     if (this.weaponName && displayName) {
       this.weaponName.textContent = displayName;
     }
+    // Every weapon swap goes through here, so the crosshair style follows the
+    // active weapon automatically.
+    this.setCrosshairStyle(displayName);
+  }
+
+  /**
+   * The shotgun gets the traditional four separated bars with an empty middle:
+   * no dot, a wider body than the rifle crosshair, and a gap that follows the
+   * pellet cone. Every other weapon keeps the standard crosshair.
+   */
+  setCrosshairStyle(displayName = '') {
+    const shotgun = String(displayName).toLowerCase() === 'shotgun';
+    this.crosshair.classList.toggle('shotgun-mode', shotgun);
+    this.crosshairSpread = shotgun
+      ? { base: 10, scale: 90 }
+      : { base: 4, scale: 650 };
   }
 
   setMoveState(state) {
@@ -388,7 +410,8 @@ export class UIManager {
   }
 
   setSpread(spread) {
-    const pixels = 4 + spread * 650;
+    const { base, scale } = this.crosshairSpread;
+    const pixels = base + spread * scale;
     this.crosshair.style.setProperty('--cross-gap', `${pixels.toFixed(1)}px`);
   }
 

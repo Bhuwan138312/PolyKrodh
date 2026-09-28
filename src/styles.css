@@ -1053,6 +1053,51 @@ button {
   background: var(--cyan);
 }
 
+/*
+ * Shotgun: the traditional four separated bars with a clearly empty middle.
+ * No centre dot at all, a larger body than the rifle crosshair, and a wider
+ * gap that tracks the pellet cone (set from JS via --cross-gap).
+ */
+.crosshair.shotgun-mode {
+  --cross-gap: 14px;
+  width: 56px;
+  height: 56px;
+}
+
+.crosshair.shotgun-mode .ch-dot {
+  display: none;
+}
+
+.crosshair.shotgun-mode .ch-top,
+.crosshair.shotgun-mode .ch-bottom {
+  left: 27px;
+  width: 3px;
+  height: 11px;
+}
+
+.crosshair.shotgun-mode .ch-top {
+  top: calc(28px - var(--cross-gap));
+}
+
+.crosshair.shotgun-mode .ch-bottom {
+  bottom: calc(28px - var(--cross-gap));
+}
+
+.crosshair.shotgun-mode .ch-left,
+.crosshair.shotgun-mode .ch-right {
+  top: 27px;
+  width: 11px;
+  height: 3px;
+}
+
+.crosshair.shotgun-mode .ch-left {
+  left: calc(28px - var(--cross-gap));
+}
+
+.crosshair.shotgun-mode .ch-right {
+  right: calc(28px - var(--cross-gap));
+}
+
 .hit-marker {
   position: absolute;
   top: 50%;

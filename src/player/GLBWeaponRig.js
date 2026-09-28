@@ -5,11 +5,16 @@ const WORLD_DOWN = new THREE.Vector3(0, -1, 0);
 
 const REFERENCE_DEFINITIONS = Object.freeze([
   { key: 'gunBody', expected: 'GunBody', candidates: ['GunBody'] },
-  { key: 'muzzlePoint', expected: 'MuzzlePoint', candidates: ['MuzzlePoint', 'muzzlepoint', 'Muzzlepoint', 'Muzzleoint'] },
-  { key: 'shellEjectPoint', expected: 'ShellEjectPoint', candidates: ['ShellEjectPoint', 'Shellejectionpoint', 'shellejectionpoint', 'ShellEjectionPoint'] },
+  // `bulletspawnpoint` is how the shotgun model names its fire point; binding
+  // it here means every existing consumer (muzzle, aim, flash, ejection
+  // basis) reuses the model's own point instead of inventing another one.
+  { key: 'muzzlePoint', expected: 'MuzzlePoint', candidates: ['MuzzlePoint', 'muzzlepoint', 'Muzzlepoint', 'Muzzleoint', 'bulletspawnpoint', 'BulletSpawnPoint', 'bullet spawn point', 'FirePoint'] },
+  { key: 'shellEjectPoint', expected: 'ShellEjectPoint', candidates: ['ShellEjectPoint', 'Shellejectionpoint', 'shellejectionpoint', 'ShellEjectionPoint', 'shell ejection point'] },
+  // The tube's loading port. The shotgun is the only weapon that uses it.
+  { key: 'shellInsertPoint', expected: 'ShellInsertPoint', candidates: ['ShellInsertPoint', 'shell insert point', 'shellinsertpoint', 'ShellInsertionPoint', 'shell insertion point', 'shellloadpoint', 'ShellLoadPoint'] },
   { key: 'bolt', expected: 'Bolt', candidates: ['Bolt', 'bolt', 'Cock', 'cock', 'slide', 'Slide', 'uar15 bolt'] },
-  { key: 'chargingHandle', expected: 'ChargingHandle', candidates: ['Charging_Handle', 'Charginghandle', 'charginghandle'] },
-  { key: 'trigger', expected: 'Trigger', candidates: ['Trigger', 'trigger'] },
+  { key: 'chargingHandle', expected: 'ChargingHandle', candidates: ['Charging_Handle', 'Charginghandle', 'charginghandle', 'charging handle'] },
+  { key: 'trigger', expected: 'Trigger', candidates: ['Trigger', 'trigger', 'm1014 trigga', 'Trigga'] },
   {
     key: 'magazine',
     expected: 'Magazine',
@@ -22,6 +27,13 @@ const REFERENCE_DEFINITIONS = Object.freeze([
   { key: 'aimPoint', expected: 'AimPoint', candidates: ['AimPoint', 'aimpoint'] },
   { key: 'bulletTemplate', expected: 'Bullet', candidates: ['Bullet', 'BulletTemplate'] },
   { key: 'shellTemplate', expected: 'Shell', candidates: ['Shell', 'ShellTemplate', 'Bulletshell', 'BulletShell', 'Object_11'] },
+  /**
+   * The shell that is actually loaded in the gun. Unlike `shellTemplate` this
+   * one stays visible in the model (on the shotgun it is the round sitting in
+   * the tube), so it is reused for the eject and the reload-insert animation
+   * instead of being hidden away.
+   */
+  { key: 'shellModel', expected: 'Shell', candidates: ['Shell', 'ShellTemplate', 'Bulletshell', 'BulletShell', 'Object_11', 'bulletcell', 'shellcell', 'Shells'] },
 ]);
 
 export class GLBWeaponRig {
@@ -65,6 +77,13 @@ export class GLBWeaponRig {
     this.reloadAnimationActive = false;
     this.reloadMagazineSwapped = false;
     this.reloadBoltActive = false;
+
+    // Tubular (shotgun) shell reload state.
+    this.shellReloadActive = false;
+    this.shellReloadShell = null;
+    this.shellReloadInsertPoint = null;
+    this.shellReloadStartPosition = new THREE.Vector3();
+    this.shellReloadStartQuaternion = new THREE.Quaternion();
 
     this.bindReferences();
   }
@@ -175,6 +194,15 @@ export class GLBWeaponRig {
         }
       });
     }
+
+    // The loaded shell stays in the model, so it is never hidden - it only
+    // needs its world scale recorded so the ejected/inserted copies of it come
+    // out the same size the one sitting in the gun is.
+    const shellModel = this.references.shellModel;
+    if (shellModel && !this.templateWorldScales.has(shellModel)) {
+      shellModel.updateWorldMatrix(true, false);
+      this.templateWorldScales.set(shellModel, shellModel.getWorldScale(new THREE.Vector3()));
+    }
   }
 
   configureRedDotMaterial(redDot) {
@@ -199,9 +227,9 @@ export class GLBWeaponRig {
     if (!point) return;
 
     this.model.updateWorldMatrix(true, true);
-    const muzzleReference = this.findNamedObject(['Muzzle', 'ddmk18_flash_hider_14']);
+    const muzzleReference = this.findNamedObject(['Muzzle', 'ddmk18_flash_hider_14', 'm1014 18.5in barrel', 'm1014 barrel']);
     const barrelPoint = this.findNamedObject(['ak200_barrel_8', 'ddmk18_103in_barrel_9']);
-    const receiver = this.findNamedObject(['ak200_receiver_6', 'ddmk18_upper_0']);
+    const receiver = this.findNamedObject(['ak200_receiver_6', 'ddmk18_upper_0', 'm1014 receiver']);
     
     // We will compute the default direction from the point itself.
     let outward = null;
@@ -330,21 +358,28 @@ export class GLBWeaponRig {
   }
 
   update(delta) {
-    this.updateBolt(delta);
+    // The eject timer owns the shot clock. It advances for every weapon,
+    // including models with no cycling bolt (the shotgun has no Bolt node, so
+    // `updateBolt` never runs and used to swallow the eject callback).
+    if (this.boltElapsed < this.config.bolt.duration) this.boltElapsed += delta;
+    this.updateShellEjectTiming();
+    this.updateBolt();
     this.updateTrigger(delta);
   }
 
-  updateBolt(delta) {
+  updateShellEjectTiming() {
+    if (this.boltShellEjected) return;
+    if (this.boltElapsed < this.config.bolt.duration * 0.38) return;
+    this.boltShellEjected = true;
+    this.pendingShellEject?.();
+    this.pendingShellEject = null;
+  }
+
+  updateBolt() {
     const bolt = this.references.bolt;
     if (!bolt || !this.boltBasePosition || this.boltElapsed >= this.config.bolt.duration) return;
 
-    this.boltElapsed += delta;
     const progress = THREE.MathUtils.clamp(this.boltElapsed / this.config.bolt.duration, 0, 1);
-    if (!this.boltShellEjected && progress >= 0.38) {
-      this.boltShellEjected = true;
-      this.pendingShellEject?.();
-      this.pendingShellEject = null;
-    }
     let amount = 0;
     if (progress < 0.38) {
       const phase = progress / 0.38;
@@ -454,6 +489,108 @@ export class GLBWeaponRig {
     object.quaternion.copy(fromQuaternion).slerp(toQuaternion, eased);
   }
 
+  /* ---------------------------------------------------------------- *
+   * Tubular (shotgun) shell reload
+   *
+   * The shells are fed in one at a time: each one is a copy of the shell the
+   * model already carries, and it travels from the loading hand into the
+   * model's own shell-insert point, where it disappears. No new attachment
+   * point is invented for this - the gun ships the port, we just use it.
+   * ---------------------------------------------------------------- */
+
+  beginShellReload() {
+    const point = this.references.shellInsertPoint;
+    const template = this.references.shellModel;
+    if (!point?.parent || !template) return false;
+
+    const settings = this.config.shellReload ?? {};
+    const offset = settings.insertOffset ?? [0, -0.13, 0.07];
+    const rotation = settings.insertRotation ?? [0.7, 0.3, 0.18];
+
+    this.shellReloadActive = true;
+    this.shellReloadInsertPoint = point;
+    this.shellReloadStartPosition.copy(point.position)
+      .add(new THREE.Vector3(offset[0], offset[1], offset[2]));
+    this.shellReloadStartQuaternion.copy(point.quaternion)
+      .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2])));
+    this.clearShellInsertion();
+    // Same rules as a firing reload: a queued eject must not land mid-reload.
+    this.pendingShellEject = null;
+    this.boltShellEjected = true;
+    return true;
+  }
+
+  /** Spawns the next shell at the loading hand, ready to travel inward. */
+  startShellInsertion() {
+    const point = this.shellReloadInsertPoint;
+    const template = this.references.shellModel;
+    if (!this.shellReloadActive || !point?.parent || !template) return false;
+
+    this.clearShellInsertion();
+    const shell = template.clone(true);
+    shell.visible = true;
+    shell.position.copy(this.shellReloadStartPosition);
+    shell.quaternion.copy(this.shellReloadStartQuaternion);
+    shell.scale.copy(template.scale);
+    shell.traverse((child) => {
+      child.frustumCulled = false;
+      if (child.isMesh) {
+        child.castShadow = false;
+        child.receiveShadow = false;
+      }
+    });
+    point.parent.add(shell);
+    this.shellReloadShell = shell;
+    return true;
+  }
+
+  /** `phase` is 0..1 across one shell's insertion window. */
+  updateShellReload(phase) {
+    const shell = this.shellReloadShell;
+    const point = this.shellReloadInsertPoint;
+    if (!shell || !point) return;
+    const eased = smoothstep(THREE.MathUtils.clamp(phase, 0, 1));
+    shell.position.lerpVectors(this.shellReloadStartPosition, point.position, eased);
+    shell.quaternion.slerpQuaternions(this.shellReloadStartQuaternion, point.quaternion, eased);
+    // At the port it is inside the gun, so it is no longer drawn.
+    shell.visible = eased < 1;
+  }
+
+  /** The shell reached the port: retire the copy, the round is now chambered. */
+  commitShellInsert() {
+    this.clearShellInsertion();
+  }
+
+  finishShellReload() {
+    this.clearShellInsertion();
+    this.shellReloadActive = false;
+    this.shellReloadInsertPoint = null;
+  }
+
+  cancelShellReload() {
+    this.finishShellReload();
+  }
+
+  clearShellInsertion() {
+    if (!this.shellReloadShell) return;
+    this.shellReloadShell.parent?.remove(this.shellReloadShell);
+    this.shellReloadShell = null;
+  }
+
+  hasShellInsertPoint() {
+    return Boolean(this.references.shellInsertPoint && this.references.shellModel);
+  }
+
+  /** The loading port, in model-local space, so the support hand can reach it. */
+  getShellInsertModelPosition(target) {
+    const point = this.references.shellInsertPoint;
+    if (!point) return false;
+    this.model.updateWorldMatrix(true, true);
+    point.getWorldPosition(target);
+    this.model.worldToLocal(target);
+    return true;
+  }
+
   swapMagazine() {
     const removed = this.currentMagazine;
     if (!removed) return;
@@ -512,6 +649,7 @@ export class GLBWeaponRig {
 
   reset() {
     this.cancelReload();
+    this.cancelShellReload();
     if (this.references.bolt && this.boltBasePosition) this.references.bolt.position.copy(this.boltBasePosition);
     if (this.references.trigger && this.triggerBasePosition) {
       this.references.trigger.position.copy(this.triggerBasePosition);

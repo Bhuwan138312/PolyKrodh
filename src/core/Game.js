@@ -145,17 +145,17 @@ export class Game {
       onFired: (origin, direction) => {
         if (this.isMultiplayer && this.network) this.network.sendShot(origin, direction);
       },
-      onAmmoChange: (magazine, reserve, reloading, elapsed) => {
-        if (this.activeWeapon === getWeapon()) this.ui.setAmmo(magazine, reserve, reloading, elapsed, getWeapon().config);
+      onAmmoChange: (magazine, reserve, reloading, elapsed, reloadDuration) => {
+        if (this.activeWeapon === getWeapon()) this.ui.setAmmo(magazine, reserve, reloading, elapsed, getWeapon().config, reloadDuration);
       },
       onSpread: (spread) => {
         if (this.activeWeapon === getWeapon()) this.ui.setSpread(spread);
       },
       onReloadStart: () => {
-        if (this.activeWeapon === getWeapon()) this.ui.setAmmo(getWeapon().magazine, getWeapon().reserve, true, 0, getWeapon().config);
+        if (this.activeWeapon === getWeapon()) this.ui.setAmmo(getWeapon().magazine, getWeapon().reserve, true, 0, getWeapon().config, getWeapon().getReloadDuration());
       },
       onReloadProgress: (magazine, reserve, elapsed) => {
-        if (this.activeWeapon === getWeapon()) this.ui.setAmmo(magazine, reserve, true, elapsed, getWeapon().config);
+        if (this.activeWeapon === getWeapon()) this.ui.setAmmo(magazine, reserve, true, elapsed, getWeapon().config, getWeapon().getReloadDuration());
       },
       onReloadEnd: () => {
         if (this.activeWeapon === getWeapon()) this.ui.setAmmo(getWeapon().magazine, getWeapon().reserve, false, 0, getWeapon().config);
@@ -167,7 +167,7 @@ export class Game {
 
     this.primaryWeapon = new WeaponSystem({
       scene: this.scene, camera: this.camera, player: this.player, arena: this.arena, effects: this.effects, audio: this.audio,
-      config: GAME_CONFIG.weapon, modelUrl: '/models/m416rifle.glb?v=3', displayName: 'M416', targetLength: 1.15, viewScale: 1.15,
+      config: GAME_CONFIG.weapon, modelUrl: '/models/m416rifle.glb?v=4', displayName: 'M416', targetLength: 1.15, viewScale: 1.15,
       basePosition: new THREE.Vector3(0.18, -0.37, -0.35), // Same placement as before
       modelOffset: new THREE.Vector3(0, 0, 0), // Reset offset so it doesn't stick out forward
       callbacks: createWeaponCallbacks(() => this.primaryWeapon),
@@ -180,15 +180,24 @@ export class Game {
       callbacks: createWeaponCallbacks(() => this.secondaryWeapon),
     });
 
-    this.weapons = [this.primaryWeapon, this.secondaryWeapon];
+    this.tertiaryWeapon = new WeaponSystem({
+      scene: this.scene, camera: this.camera, player: this.player, arena: this.arena, effects: this.effects, audio: this.audio,
+      config: GAME_CONFIG.shotgun, modelUrl: '/models/shotgun.glb', displayName: 'Shotgun', targetLength: 1.45, viewScale: 1.45,
+      basePosition: new THREE.Vector3(0.18, -0.37, -0.35), // Same placement
+      callbacks: createWeaponCallbacks(() => this.tertiaryWeapon),
+    });
+
+    this.weapons = [this.primaryWeapon, this.secondaryWeapon, this.tertiaryWeapon];
     this.activeWeaponIndex = 0;
     this.activeWeapon = this.primaryWeapon;
     this.player.weapon = this.activeWeapon;
     this.secondaryWeapon.model.visible = false;
+    this.tertiaryWeapon.model.visible = false;
     this.primaryWeapon.model.visible = false;
 
     this.input.onDigit1 = () => this.switchWeapon(0);
     this.input.onDigit2 = () => this.switchWeapon(1);
+    this.input.onDigit3 = () => this.switchWeapon(2);
     this.input.onKeyE = () => {
       if (this.activeWeapon?.toggleSuppressor) {
         this.activeWeapon.toggleSuppressor();

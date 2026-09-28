@@ -74,7 +74,9 @@ export class WeaponSystem {
       scene,
       getTargets: () => this.getCollisionTargets(),
       traceShot: (origin, direction, far) => this.arena.traceShot(origin, direction, far),
-      onImpact: (intersection, direction) => this.handleProjectileImpact(intersection, direction),
+      // The projectile is passed straight through: a pellet has to reach the
+      // impact handler with its own damage attached.
+      onImpact: (intersection, direction, projectile) => this.handleProjectileImpact(intersection, direction, projectile),
       isValidHit: (intersection) => this.isValidProjectileHit(intersection),
       maxActive: this.config.mechanics.projectile.maxActive,
       radius: this.config.mechanics.projectile.radius,
@@ -87,10 +89,22 @@ export class WeaponSystem {
     });
     this.droppedMags = [];
 
+    // Only the shotgun has `pellets`: one trigger pull becomes a fan of
+    // projectiles, each landing its own damage, and its reload feeds shells
+    // one at a time instead of swapping a magazine.
+    this.pelletConfig = this.config.pellets ?? null;
+    this.isShotgun = Boolean(this.pelletConfig);
+    this.shellReloadSettings = this.config.mechanics.shellReload ?? null;
+    this.shellReload = {
+      needed: 0,
+      inserted: 0,
+      inFlight: false,
+    };
+
     this.buildModel();
     this.addWeaponLighting();
 
-    this.fireMode = this.displayName === 'Pistol' ? 'single' : 'auto';
+    this.fireMode = (this.displayName === 'Pistol' || this.config.singleShot) ? 'single' : 'auto';
     this.fireWasPressed = false;
 
     this.ready = this.loadConfiguredModel();
@@ -283,8 +297,8 @@ export class WeaponSystem {
       this.weaponRig.getTemplateWorldScale(this.weaponRig.references.bulletTemplate),
     );
     this.shells.setTemplate(
-      this.weaponRig.references.shellTemplate,
-      this.weaponRig.getTemplateWorldScale(this.weaponRig.references.shellTemplate),
+      this.weaponRig.references.shellModel ?? this.weaponRig.references.shellTemplate,
+      this.weaponRig.getTemplateWorldScale(this.weaponRig.references.shellModel ?? this.weaponRig.references.shellTemplate),
     );
     this.model.updateWorldMatrix(true, true);
 
@@ -368,6 +382,9 @@ export class WeaponSystem {
       lastAds: false,
     };
     this.weaponRig?.reset();
+    this.shellReload.needed = 0;
+    this.shellReload.inserted = 0;
+    this.shellReload.inFlight = false;
     this.clearTransientEffects();
     this.weaponHolder.position.copy(this.basePosition);
     this.weaponHolder.rotation.copy(this.baseRotation);
@@ -405,10 +422,21 @@ export class WeaponSystem {
     this.spread = THREE.MathUtils.lerp(this.spread, targetSpread, 1 - Math.exp(-18 * delta));
     // Decay shot counter when not firing
     if (!this.input.firing) this.shotCounter = Math.max(0, this.shotCounter - delta * 12);
-    this.callbacks.onSpread?.(this.spread);
+    // A shotgun's crosshair has to show the cone the pellets actually fan out
+    // through, which is far wider than the rifle's own aim jitter.
+    this.callbacks.onSpread?.(this.spread + (this.pelletConfig ? this.pelletConfig.spread : 0));
 
-    const reloadProgress = this.reloading ? this.reloadElapsed / this.config.reloadDuration : 0;
-    this.hands?.updateReload(reloadProgress);
+    const reloadProgress = this.reloading ? this.reloadElapsed / this.getReloadDuration() : 0;
+    if (this.isShotgun) {
+      // The shotgun never changes a magazine, so the hand feeds shells into
+      // the loading port instead of running the mag-swap animation.
+      const insertPhase = this.getShellInsertPhase();
+      const insertPoint = new THREE.Vector3();
+      const hasInsertPoint = this.weaponRig?.getShellInsertModelPosition(insertPoint) ?? false;
+      this.hands?.updateShellReload(insertPhase, hasInsertPoint ? insertPoint : null);
+    } else {
+      this.hands?.updateReload(reloadProgress);
+    }
     // Reload animation: tilt gun LEFT, throw mag out, spawn new, return
     let reloadTiltZ = 0;
     let reloadTiltX = 0;
@@ -634,7 +662,14 @@ export class WeaponSystem {
   }
 
   tryFire() {
-    if (this.reloading || this.fireCooldown > 0 || this.dryCooldown > 0) return;
+    if (this.fireCooldown > 0 || this.dryCooldown > 0) return;
+    if (this.reloading) {
+      // Mag-fed weapons have to finish the reload, but a shotgun can be broken
+      // out of a shell reload: whatever is already seated stays in the tube and
+      // the shells that had not gone in yet are simply left in reserve.
+      if (!this.isShotgun) return;
+      this.cancelShellReload();
+    }
     if (this.magazine <= 0) {
       this.dryCooldown = 0.28;
       this.audio.play('dry');
@@ -648,13 +683,14 @@ export class WeaponSystem {
       return;
     }
 
-    let projectile = null;
+    let fired = null;
     try {
-      projectile = this.fireProjectile(shot);
+      fired = this.isShotgun ? this.firePellets(shot) : this.fireProjectile(shot);
     } catch (error) {
       console.warn('[WeaponSystem] Projectile creation failed.', error);
     }
-    if (!projectile) {
+    const shotCount = Array.isArray(fired) ? fired.length : (fired ? 1 : 0);
+    if (!shotCount) {
       this.shotDiagnostics.failed += 1;
       return;
     }
@@ -680,7 +716,10 @@ export class WeaponSystem {
       + (Math.random() - 0.5) * this.config.recoilYaw * 0.4;
     this.player.addRecoil(progressivePitch, recoilYaw);
     this.player.addShake(0.08 + this.shotCounter * 0.008);
-    if (this.displayName === 'M416' || this.displayName === 'SCAR') {
+    if (this.isShotgun) {
+      // One blast = one sound, no matter how many pellets it threw.
+      this.audio.play('shotgun_shot');
+    } else if (this.displayName === 'M416' || this.displayName === 'SCAR') {
       this.audio.play(this.suppressorEnabled ? 'suppressed_shot' : 'm4_shot');
     } else if (this.displayName === 'Pistol') {
       this.audio.play('glock_shot');
@@ -689,7 +728,7 @@ export class WeaponSystem {
     }
     this.emitAmmo();
 
-    this.shotDiagnostics.created += 1;
+    this.shotDiagnostics.created += shotCount;
     this.shotDiagnostics.lastOrigin = shot.origin.toArray();
     this.shotDiagnostics.lastTarget = shot.target.toArray();
     this.shotDiagnostics.lastDirection = shot.direction.toArray();
@@ -796,6 +835,54 @@ export class WeaponSystem {
     });
   }
 
+  /**
+   * One trigger pull, a whole fan of pellets. They all leave the gun's own
+   * bullet-spawn point (`shot.origin`, i.e. the muzzle) and none of them share
+   * a direction: the cone is sampled as an even golden-angle spiral that is
+   * rotated and jittered per shot, which reads as a natural pattern instead
+   * of random noise. Each pellet carries its own slice of the weapon damage.
+   */
+  firePellets(shot) {
+    const pellets = this.pelletConfig;
+    const projectileConfig = this.config.mechanics.projectile;
+    const count = Math.max(1, Math.round(pellets.count));
+    const bodyPerPellet = this.config.bodyDamage / count;
+    const headPerPellet = this.config.headDamage / count;
+
+    // A stable perpendicular basis around the aim direction: the pellets fan
+    // out sideways/upwards from where the player is actually looking.
+    const forward = shot.direction.clone().normalize();
+    const worldUp = Math.abs(forward.y) > 0.98 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(0, 1, 0);
+    const right = new THREE.Vector3().crossVectors(forward, worldUp).normalize();
+    const up = new THREE.Vector3().crossVectors(right, forward).normalize();
+
+    const spin = Math.random() * Math.PI * 2;
+    const fired = [];
+    for (let index = 0; index < count; index += 1) {
+      const angle = spin + index * GOLDEN_ANGLE;
+      const radius = pellets.spread * Math.sqrt((index + 0.5) / count) * (0.85 + Math.random() * 0.3);
+      const direction = forward.clone()
+        .addScaledVector(right, Math.cos(angle) * radius)
+        .addScaledVector(up, Math.sin(angle) * radius)
+        .normalize();
+      const pellet = this.projectiles.fire({
+        origin: shot.origin,
+        direction,
+        speed: projectileConfig.speed,
+        range: projectileConfig.range,
+        // The cone is already baked into the direction above.
+        spread: 0,
+        length: projectileConfig.length,
+        style: projectileConfig.style,
+        damage: bodyPerPellet,
+        headDamage: headPerPellet,
+        originRef: shot.origin,
+      });
+      if (pellet) fired.push(pellet);
+    }
+    return fired;
+  }
+
   getCollisionTargets() {
     // Static geometry is traced through the arena's collision world; only the
     // moving actors still need a mesh raycast.
@@ -823,7 +910,7 @@ export class WeaponSystem {
     return true;
   }
 
-  handleProjectileImpact(intersection, direction) {
+  handleProjectileImpact(intersection, direction, projectile = null) {
     this.shotDiagnostics.impacts += 1;
     const object = intersection.object ?? null;
     const faceNormal = intersection.face?.normal;
@@ -834,24 +921,22 @@ export class WeaponSystem {
         : direction.clone().negate());
     const bot = object?.userData?.bot;
     const isPlayer = object?.userData?.isPlayer;
+    // Each projectile pays out on its own terms, so a pellet hit is a fraction
+    // of the blast and several pellets simply add up.
+    const damage = this.resolveProjectileDamage(projectile, intersection.point);
     
     if (bot && !bot.dead) {
       this.shotDiagnostics.botHits += 1;
       const headshot = Boolean(object.userData.head);
       this.effects.hit(intersection.point, headshot);
-      this.callbacks.onBotHit?.(
-        bot,
-        headshot ? this.config.headDamage : this.config.bodyDamage,
-        intersection.point,
-        headshot,
-      );
+      this.callbacks.onBotHit?.(bot, headshot ? damage.head : damage.body, intersection.point, headshot);
     } else if (isPlayer) {
       // Simplistic headshot detection for remote players based on local Y height difference
       const headshot = intersection.point.y > object.position.y + 0.6; 
       this.effects.hit(intersection.point, headshot);
       this.callbacks.onPlayerHit?.(
         object.userData.id, 
-        headshot ? this.config.headDamage : this.config.bodyDamage, 
+        headshot ? damage.head : damage.body, 
         headshot
       );
     } else {
@@ -859,23 +944,94 @@ export class WeaponSystem {
     }
   }
 
+  /**
+   * How much damage this particular projectile deals at this point. Plain
+   * bullets use the weapon's full figure; a pellet uses its own share, scaled
+   * down with distance so a blast that only connects at range cannot carry
+   * the same punch as one at contact range.
+   */
+  resolveProjectileDamage(projectile, point) {
+    const full = { body: this.config.bodyDamage, head: this.config.headDamage };
+    if (!projectile || typeof projectile.damage !== 'number') return full;
+
+    const pellets = this.pelletConfig;
+    let multiplier = 1;
+    if (pellets) {
+      const travelled = point && projectile.originRef
+        ? point.distanceTo(projectile.originRef)
+        : 0;
+      const start = pellets.damageFalloffStart;
+      const end = Math.max(start + 0.001, pellets.damageFalloffEnd);
+      if (travelled <= start) {
+        multiplier = 1;
+      } else if (travelled >= end) {
+        multiplier = pellets.damageFalloffMin;
+      } else {
+        const phase = (travelled - start) / (end - start);
+        multiplier = 1 + (pellets.damageFalloffMin - 1) * phase;
+      }
+    }
+    return {
+      body: projectile.damage * multiplier,
+      head: (projectile.headDamage ?? projectile.damage) * multiplier,
+    };
+  }
+
   startReload() {
     if (this.reloading || this.magazine >= this.config.magazineSize || this.reserve <= 0) return;
     this.reloading = true;
     this.reloadElapsed = 0;
-    this.weaponRig?.beginReload();
-    if (this.displayName === 'Pistol') {
-      this.audio.play('reload_pistol');
+    if (this.isShotgun) {
+      // Only the shells that are actually missing get loaded, so a partly
+      // loaded tube finishes quickly instead of replaying all five.
+      this.shellReload.needed = Math.min(this.config.magazineSize - this.magazine, this.reserve);
+      this.shellReload.inserted = 0;
+      this.shellReload.inFlight = false;
+      this.weaponRig?.beginShellReload();
     } else {
+      this.weaponRig?.beginReload();
+    }
+    if (this.displayName === 'Pistol' && !this.isShotgun) {
+      this.audio.play('reload_pistol');
+    } else if (!this.isShotgun) {
+      // The shotgun skips this: its per-shell clicks carry the rhythm, and a
+      // magazine-swap click on top of them would only muddy it.
       this.audio.play('reload_m4');
     }
     this.callbacks.onReloadStart?.();
     this.emitAmmo();
   }
 
+  /**
+   * How long this reload will take. A rifle swaps its magazine in one fixed
+   * beat; a shotgun has one beat per shell it is still missing.
+   */
+  getReloadDuration() {
+    if (!this.isShotgun) return this.config.reloadDuration;
+    const shells = this.shellReload.needed || Math.max(0, this.config.magazineSize - this.magazine);
+    return Math.max(0.05, shells * (this.shellReloadSettings?.shellDuration ?? 0.42));
+  }
+
+  /** 0..1 through the shell currently being fed in (0 when nothing is in flight). */
+  getShellInsertPhase() {
+    if (!this.isShotgun || !this.reloading || !this.shellReload.inFlight) return 0;
+    const shellDuration = this.shellReloadSettings?.shellDuration ?? 0.42;
+    return THREE.MathUtils.clamp(
+      (this.reloadElapsed - this.shellReload.inserted * shellDuration) / shellDuration,
+      0,
+      1,
+    );
+  }
+
   updateReload(delta) {
     if (!this.reloading) return;
     this.reloadElapsed += delta;
+
+    if (this.isShotgun) {
+      this.updateShellReload();
+      return;
+    }
+
     this.weaponRig?.updateReload(this.reloadElapsed / this.config.reloadDuration);
     this.callbacks.onReloadProgress?.(this.magazine, this.reserve, this.reloadElapsed);
     if (this.reloadElapsed >= this.config.reloadDuration) {
@@ -891,7 +1047,77 @@ export class WeaponSystem {
     }
   }
 
+  /**
+   * The tubular reload: shells go in one at a time, and the ammo count rises
+   * by one for each shell that actually makes it into the gun.
+   */
+  updateShellReload() {
+    const shellDuration = this.shellReloadSettings?.shellDuration ?? 0.42;
+
+    // Start the next shell as soon as the previous one has seated.
+    if (!this.shellReload.inFlight && this.shellReload.inserted < this.shellReload.needed) {
+      if (this.weaponRig?.startShellInsertion()) this.shellReload.inFlight = true;
+    }
+
+    if (this.shellReload.inFlight) {
+      this.weaponRig?.updateShellReload(this.getShellInsertPhase());
+      if (this.reloadElapsed >= (this.shellReload.inserted + 1) * shellDuration) {
+        this.completeShellInsert();
+      }
+    }
+
+    this.callbacks.onReloadProgress?.(this.magazine, this.reserve, this.reloadElapsed);
+
+    // Full tube, no shells left, or the reserve ran out: stop on our own.
+    if (this.magazine >= this.config.magazineSize || this.reserve <= 0 || this.shellReload.inserted >= this.shellReload.needed) {
+      this.finishShellReload();
+    }
+  }
+
+  completeShellInsert() {
+    const state = this.shellReload;
+    if (state.inserted >= state.needed) return;
+    state.inserted += 1;
+    state.inFlight = false;
+    this.magazine = Math.min(this.config.magazineSize, this.magazine + 1);
+    this.reserve = Math.max(0, this.reserve - 1);
+    this.weaponRig?.commitShellInsert();
+    this.audio.play('shell_insert');
+    this.emitAmmo();
+  }
+
+  finishShellReload() {
+    this.weaponRig?.finishShellReload();
+    this.reloading = false;
+    this.reloadElapsed = 0;
+    this.shellReload.inserted = 0;
+    this.shellReload.inFlight = false;
+    this.callbacks.onReloadEnd?.();
+    this.emitAmmo();
+  }
+
+  /** Firing out of a reload keeps whatever is already seated. */
+  cancelShellReload() {
+    this.weaponRig?.cancelShellReload();
+    this.reloading = false;
+    this.reloadElapsed = 0;
+    this.shellReload.inserted = 0;
+    this.shellReload.inFlight = false;
+    this.callbacks.onReloadEnd?.();
+    this.emitAmmo();
+  }
+
   emitAmmo() {
-    this.callbacks.onAmmoChange?.(this.magazine, this.reserve, this.reloading, this.reloadElapsed);
+    this.callbacks.onAmmoChange?.(
+      this.magazine,
+      this.reserve,
+      this.reloading,
+      this.reloadElapsed,
+      this.getReloadDuration(),
+    );
   }
 }
+
+// Golden angle, so the pellets spread evenly across the cone instead of
+// bunching up like a random spray would.
+const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));

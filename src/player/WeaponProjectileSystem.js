@@ -54,6 +54,27 @@ export class WeaponProjectileSystem {
       toneMapped: false,
       blending: THREE.AdditiveBlending
     });
+
+    // Pellet look: a small low-poly chip with a short faint streak. A shotgun
+    // puts eight of these in the air at once, so they stay deliberately plain
+    // and dim instead of using the rifle's bright tracer + glow.
+    this.pelletGeometry = new THREE.OctahedronGeometry(radius * 1.9, 0);
+    this.pelletMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffe0b4,
+      transparent: true,
+      opacity: 0.85,
+      depthWrite: false,
+      toneMapped: false,
+    });
+    this.pelletStreakGeometry = new THREE.CylinderGeometry(radius * 0.4, radius * 0.7, 0.07, 5, 1, true);
+    this.pelletStreakMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffcf94,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      toneMapped: false,
+      blending: THREE.AdditiveBlending,
+    });
   }
 
   setTemplate(template, worldScale = null) {
@@ -62,7 +83,18 @@ export class WeaponProjectileSystem {
     if (this.template) this.template.visible = false;
   }
 
-  fire({ origin, direction, speed, range, spread = 0, length = 0.24 }) {
+  fire({
+    origin,
+    direction,
+    speed,
+    range,
+    spread = 0,
+    length = 0.24,
+    style = 'tracer',
+    damage = null,
+    headDamage = null,
+    originRef = null,
+  }) {
     while (this.projectiles.length >= this.maxActive) this.removeProjectile(this.projectiles[0]);
 
     const shotDirection = direction.clone().normalize();
@@ -76,7 +108,7 @@ export class WeaponProjectileSystem {
         .normalize();
     }
 
-    const visual = this.createProjectileVisual(shotDirection, length);
+    const visual = this.createProjectileVisual(shotDirection, length, style);
     if (!visual) {
       console.warn('[WeaponProjectileSystem] Projectile visual creation failed.');
       return null;
@@ -90,6 +122,9 @@ export class WeaponProjectileSystem {
       return null;
     }
 
+    // `damage` is this projectile's own share of the weapon's damage. A
+    // shotgun pellet carries a fraction of the blast and lands on its own, so
+    // several pellets on one target add up and a lone pellet never kills.
     const projectile = {
       id: this.nextId++,
       mesh: visual,
@@ -97,13 +132,33 @@ export class WeaponProjectileSystem {
       speed,
       remainingRange: range,
       active: true,
+      style,
+      damage,
+      headDamage,
+      originRef: originRef ?? origin.clone(),
     };
     this.projectiles.push(projectile);
     return projectile;
   }
 
-  createProjectileVisual(direction, length, assignLight = false) {
+  createProjectileVisual(direction, length, style = 'tracer') {
     const visual = new THREE.Group();
+    if (style === 'pellet') {
+      const pellet = new THREE.Mesh(this.pelletGeometry, this.pelletMaterial);
+      const streak = new THREE.Mesh(this.pelletStreakGeometry, this.pelletStreakMaterial);
+      streak.position.y = -0.03;
+      visual.add(pellet, streak);
+
+      visual.traverse((child) => {
+        child.frustumCulled = false;
+        if (child.isMesh) {
+          child.castShadow = false;
+          child.receiveShadow = false;
+        }
+      });
+      return visual;
+    }
+
     if (this.template) {
       const templateClone = this.template.clone(true);
       templateClone.visible = true;
@@ -201,7 +256,7 @@ export class WeaponProjectileSystem {
 
         if (intersection) {
           try {
-            this.onImpact?.(intersection, projectile.direction);
+            this.onImpact?.(intersection, projectile.direction, projectile);
           } catch (error) {
             console.warn(`[WeaponProjectileSystem] Impact handling failed for shot ${projectile.id}.`, error);
           }

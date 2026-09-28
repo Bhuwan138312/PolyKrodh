@@ -79,6 +79,87 @@ export const GAME_CONFIG = Object.freeze({
       },
     },
   },
+  /**
+   * The pump shotgun. It is the only weapon with `pellets`, which turns one
+   * trigger pull into a fan of projectiles that all leave the gun's own
+   * bullet-spawn point. Each pellet carries its own slice of `bodyDamage`
+   * (a single pellet can never land the whole blast, and pellets that miss
+   * simply never contribute), and the tube holds 5 shells that are fed in one
+   * at a time through the model's own shell-insert point.
+   */
+  shotgun: {
+    magazineSize: 5,
+    reserveSize: 30,
+    maxReserve: 60,
+    fireInterval: 0.68,
+    // Per shell. The real reload length is derived from how many are missing.
+    reloadDuration: 0.42,
+    bodyDamage: 112,
+    headDamage: 168,
+    range: 60,
+    baseSpread: 0.0025,
+    moveSpread: 0.012,
+    recoilPitch: 0.052,
+    recoilYaw: 0.012,
+    lowAmmoThreshold: 2,
+    // A pump gun fires one shell per trigger pull, like the pistol.
+    singleShot: true,
+    pellets: {
+      count: 8,
+      // Half-angle of the cone the pellets fan out through.
+      spread: 0.08,
+      damageFalloffStart: 9,
+      damageFalloffEnd: 26,
+      damageFalloffMin: 0.3,
+    },
+    mechanics: {
+      projectile: {
+        speed: 190,
+        range: 60,
+        length: 0.1,
+        radius: 0.006,
+        maxActive: 96,
+        maxStepDistance: 2.5,
+        // Low-poly pellet look instead of the rifle tracer.
+        style: 'pellet',
+      },
+      bolt: {
+        duration: 0.1,
+        travel: 0.36,
+      },
+      trigger: {
+        duration: 0.055,
+        travel: 0.14,
+      },
+      // Unused by the shotgun (it has no detachable magazine); kept so the
+      // shared rig/hand code can never read undefined.
+      magazine: {
+        removeStart: 0.1,
+        removeEnd: 0.2,
+        insertStart: 0.45,
+        insertEnd: 0.65,
+        cockStart: 0.8,
+        cockEnd: 1.0,
+        downDistance: 1.2,
+        backwardDistance: 0.4,
+      },
+      shell: {
+        speed: 1.35,
+        lift: 1.0,
+        backwardSpeed: 0.34,
+        gravity: 9.8,
+        lifetime: 2.2,
+        maxActive: 16,
+      },
+      // Tubular reload: one shell per `shellDuration` window.
+      shellReload: {
+        shellDuration: 0.42,
+        // Where a fresh shell starts, relative to the shell-insert point.
+        insertOffset: [0, -0.13, 0.07],
+        insertRotation: [0.7, 0.3, 0.18],
+      },
+    },
+  },
   secondaryWeapon: {
     magazineSize: 12,
     reserveSize: 60,

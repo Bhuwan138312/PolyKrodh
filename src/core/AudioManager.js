@@ -38,6 +38,7 @@ export class AudioManager {
     this.m4Buffer = null;
     this.glockBuffer = null;
     this.m4ReloadBuffer = null;
+    this.shotgunBuffer = null;
     this.foot1Buffer = null;
     this.foot2Buffer = null;
     this.useFoot1 = true;
@@ -71,6 +72,14 @@ export class AudioManager {
       this.glockBuffer = await this.context.decodeAudioData(arrayBufferGlock);
     } catch (e) {
       console.warn('Failed to load custom Glock sound', e);
+    }
+
+    try {
+      const responseShotgun = await fetch('/sounds/shotgun.mp3');
+      const arrayBufferShotgun = await responseShotgun.arrayBuffer();
+      this.shotgunBuffer = await this.context.decodeAudioData(arrayBufferShotgun);
+    } catch (e) {
+      console.warn('Failed to load shotgun sound', e);
     }
 
     try {
@@ -166,6 +175,8 @@ export class AudioManager {
     const settings = {
       gunshot: () => this.gunshot(destination, now, 1, 130),
       m4_shot: () => this.m4_shot(destination, now, 1.2),
+      shotgun_shot: () => this.shotgun_shot(destination, now, 1),
+      shell_insert: () => this.click(destination, now, 1500, 0.03, 0.05),
       glock_shot: () => this.glock_shot(destination, now, 1.1),
       suppressed_shot: () => this.suppressed_shot(destination, now, 1.2),
       enemyShot: () => this.gunshot(destination, now, 0.62, 105),
@@ -280,6 +291,27 @@ export class AudioManager {
     }
 
     this.gunshot(destination, now, strength * 0.8, 150);
+  }
+
+  /**
+   * The shotgun blast. Gain sits between the suppressed rifle (0.5) and the
+   * unsuppressed one (1.2) so the bigger sample never shouts over them.
+   */
+  shotgun_shot(destination, now, strength) {
+    const pannerGainValue = pannerGain(destination);
+
+    if (this.shotgunBuffer) {
+      const source = this.context.createBufferSource();
+      source.buffer = this.shotgunBuffer;
+      const gain = this.context.createGain();
+      gain.gain.value = 0.95 * strength * pannerGainValue;
+      source.connect(gain).connect(destination);
+      source.start(now);
+      return;
+    }
+
+    // Fallback if the sample fails to load: a low, heavy thump.
+    this.gunshot(destination, now, strength * 1.05, 95);
   }
 
   suppressed_shot(destination, now, strength) {
