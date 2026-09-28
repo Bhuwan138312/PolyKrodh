@@ -3,9 +3,6 @@ import * as THREE from 'three';
 const RIGHT_GRIP_NAMES = ['ddmk18_grip_16', 'ak200_grip_13', 'RightGrip', 'Pistol_Grip', 'PistolGrip'];
 const SUPPORT_GRIP_NAMES = ['ddmk18_handguard_15', 'ak200_handguard_11', 'SupportGrip', 'Handguard_Railed', 'handguard', 'Handguard'];
 
-const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
-const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
-
 export class WeaponHands {
   constructor({ model, asset, isPistol = false, handAnchors = null, fallbackHandsSource = null }) {
     this.model = model;
@@ -123,48 +120,6 @@ export class WeaponHands {
       // 8. Release charging handle and return to barrel smoothly
       const t = easeInOutQuad((progress - 0.89) / 0.11);
       lerpTransform(cockPulledPos, this.leftHandBasePos, cockRot, this.leftHandBaseRot, t);
-    }
-  }
-
-  /**
-   * Shotgun shell feed. `phase` is 0..1 through the shell currently going in
-   * and `insertPosition` is the gun's own loading port in model space, so the
-   * support fist carries each shell to the exact spot the round enters at.
-   * The same blocky arm is reused - only its pose changes.
-   */
-  updateShellReload(phase, insertPosition) {
-    if (!this.leftHand) return;
-    const base = this.leftHandBasePos;
-    const baseRot = this.leftHandBaseRot;
-
-    if (phase <= 0 || phase >= 1 || !insertPosition) {
-      this.leftHand.position.copy(base);
-      this.leftHand.quaternion.setFromEuler(baseRot);
-      return;
-    }
-
-    // Reach the port, push the shell home, then pull back ready for the next.
-    const reach = insertPosition.clone().lerp(new THREE.Vector3(-0.01, -0.05, 0.03), 0.35);
-    const feedRot = new THREE.Euler(0.5, -0.2, 0.1);
-    const lerp = (fromPos, toPos, fromRot, toRot, t) => {
-      this.leftHand.position.lerpVectors(fromPos, toPos, t);
-      this.leftHand.quaternion.slerpQuaternions(
-        new THREE.Quaternion().setFromEuler(fromRot),
-        new THREE.Quaternion().setFromEuler(toRot),
-        t,
-      );
-    };
-
-    if (phase < 0.45) {
-      const t = easeInOutCubic(phase / 0.45);
-      lerp(base, reach, baseRot, feedRot, t);
-    } else if (phase < 0.72) {
-      // Push: the hand nudges further into the port as the shell seats.
-      const t = easeOutCubic((phase - 0.45) / 0.27);
-      lerp(reach, insertPosition, feedRot, feedRot, t);
-    } else {
-      const t = easeInOutCubic((phase - 0.72) / 0.28);
-      lerp(insertPosition, base, feedRot, baseRot, t);
     }
   }
 

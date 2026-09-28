@@ -10,11 +10,13 @@ const REFERENCE_DEFINITIONS = Object.freeze([
   // basis) reuses the model's own point instead of inventing another one.
   { key: 'muzzlePoint', expected: 'MuzzlePoint', candidates: ['MuzzlePoint', 'muzzlepoint', 'Muzzlepoint', 'Muzzleoint', 'bulletspawnpoint', 'BulletSpawnPoint', 'bullet spawn point', 'FirePoint'] },
   { key: 'shellEjectPoint', expected: 'ShellEjectPoint', candidates: ['ShellEjectPoint', 'Shellejectionpoint', 'shellejectionpoint', 'ShellEjectionPoint', 'shell ejection point'] },
-  // The tube's loading port. The shotgun is the only weapon that uses it.
-  { key: 'shellInsertPoint', expected: 'ShellInsertPoint', candidates: ['ShellInsertPoint', 'shell insert point', 'shellinsertpoint', 'ShellInsertionPoint', 'shell insertion point', 'shellloadpoint', 'ShellLoadPoint'] },
+  // The tube's loading port. Note the underscore forms: GLTFLoader runs every
+  // node name through PropertyBinding.sanitizeNodeName, so a model authored as
+  // "shell insert point" reaches us as "shell_insert_point".
+  { key: 'shellInsertPoint', expected: 'ShellInsertPoint', candidates: ['ShellInsertPoint', 'shell_insert_point', 'shellinsertpoint', 'ShellInsertionPoint', 'shell_insertion_point', 'shell_load_point', 'shell insert point', 'shellinsertpoint', 'ShellInsertionPoint', 'shell insertion point', 'shellloadpoint', 'ShellLoadPoint'] },
   { key: 'bolt', expected: 'Bolt', candidates: ['Bolt', 'bolt', 'Cock', 'cock', 'slide', 'Slide', 'uar15 bolt'] },
-  { key: 'chargingHandle', expected: 'ChargingHandle', candidates: ['Charging_Handle', 'Charginghandle', 'charginghandle', 'charging handle'] },
-  { key: 'trigger', expected: 'Trigger', candidates: ['Trigger', 'trigger', 'm1014 trigga', 'Trigga'] },
+  { key: 'chargingHandle', expected: 'ChargingHandle', candidates: ['Charging_Handle', 'Charginghandle', 'charginghandle', 'charging_handle', 'charging handle'] },
+  { key: 'trigger', expected: 'Trigger', candidates: ['Trigger', 'trigger', 'm1014_trigga', 'm1014 trigga', 'Trigga'] },
   {
     key: 'magazine',
     expected: 'Magazine',
@@ -78,13 +80,6 @@ export class GLBWeaponRig {
     this.reloadMagazineSwapped = false;
     this.reloadBoltActive = false;
 
-    // Tubular (shotgun) shell reload state.
-    this.shellReloadActive = false;
-    this.shellReloadShell = null;
-    this.shellReloadInsertPoint = null;
-    this.shellReloadStartPosition = new THREE.Vector3();
-    this.shellReloadStartQuaternion = new THREE.Quaternion();
-
     this.bindReferences();
   }
 
@@ -94,25 +89,13 @@ export class GLBWeaponRig {
     const unresolved = [];
 
     for (const definition of REFERENCE_DEFINITIONS) {
-      const expectedObject = this.asset.getObjectByName(definition.expected);
-      let resolvedObject = expectedObject;
-      let resolvedBy = expectedObject ? definition.expected : null;
-
-      if (!resolvedObject) {
-        for (const candidate of definition.candidates) {
-          resolvedObject = this.asset.getObjectByName(candidate);
-          if (resolvedObject) {
-            resolvedBy = candidate;
-            break;
-          }
-        }
-      }
+      const { object: resolvedObject, by: resolvedBy } = this.resolveReference(definition);
 
       this.references[definition.key] = resolvedObject ?? null;
-      if (!expectedObject) missingExpected.push(definition.expected);
+      if (resolvedBy !== definition.expected) missingExpected.push(definition.expected);
       if (!resolvedObject) {
         unresolved.push(definition.expected);
-      } else if (!expectedObject) {
+      } else if (resolvedBy !== definition.expected) {
         substitutions[definition.expected] = resolvedBy;
       }
     }
@@ -146,6 +129,32 @@ export class GLBWeaponRig {
     this.configureAdsReference();
     this.attachSightsToBolt();
     this.tweakMaterials();
+  }
+
+  /**
+   * Resolves one reference by name. The expected name is tried first, then the
+   * known aliases, and finally a separator/case-insensitive comparison. That
+   * last step matters because GLTFLoader rewrites node names through
+   * PropertyBinding.sanitizeNodeName ("shell insert point" becomes
+   * "shell_insert_point"), so a model can ship a perfectly good attachment
+   * point under a name none of the aliases spelled out.
+   */
+  resolveReference(definition) {
+    const expected = this.asset.getObjectByName(definition.expected);
+    if (expected) return { object: expected, by: definition.expected };
+
+    for (const candidate of definition.candidates) {
+      const found = this.asset.getObjectByName(candidate);
+      if (found) return { object: found, by: candidate };
+    }
+
+    const wanted = normalizeNodeName(definition.expected);
+    let fallback = null;
+    this.asset.traverse((child) => {
+      if (fallback || !child.name) return;
+      if (normalizeNodeName(child.name) === wanted) fallback = child;
+    });
+    return fallback ? { object: fallback, by: fallback.name } : { object: null, by: null };
   }
 
   attachSightsToBolt() {
@@ -227,9 +236,9 @@ export class GLBWeaponRig {
     if (!point) return;
 
     this.model.updateWorldMatrix(true, true);
-    const muzzleReference = this.findNamedObject(['Muzzle', 'ddmk18_flash_hider_14', 'm1014 18.5in barrel', 'm1014 barrel']);
+    const muzzleReference = this.findNamedObject(['Muzzle', 'ddmk18_flash_hider_14', 'm1014_18.5in_barrel', 'm1014_18_5in_barrel', 'm1014 barrel']);
     const barrelPoint = this.findNamedObject(['ak200_barrel_8', 'ddmk18_103in_barrel_9']);
-    const receiver = this.findNamedObject(['ak200_receiver_6', 'ddmk18_upper_0', 'm1014 receiver']);
+    const receiver = this.findNamedObject(['ak200_receiver_6', 'ddmk18_upper_0', 'm1014_receiver', 'm1014 receiver']);
     
     // We will compute the default direction from the point itself.
     let outward = null;
@@ -489,108 +498,6 @@ export class GLBWeaponRig {
     object.quaternion.copy(fromQuaternion).slerp(toQuaternion, eased);
   }
 
-  /* ---------------------------------------------------------------- *
-   * Tubular (shotgun) shell reload
-   *
-   * The shells are fed in one at a time: each one is a copy of the shell the
-   * model already carries, and it travels from the loading hand into the
-   * model's own shell-insert point, where it disappears. No new attachment
-   * point is invented for this - the gun ships the port, we just use it.
-   * ---------------------------------------------------------------- */
-
-  beginShellReload() {
-    const point = this.references.shellInsertPoint;
-    const template = this.references.shellModel;
-    if (!point?.parent || !template) return false;
-
-    const settings = this.config.shellReload ?? {};
-    const offset = settings.insertOffset ?? [0, -0.13, 0.07];
-    const rotation = settings.insertRotation ?? [0.7, 0.3, 0.18];
-
-    this.shellReloadActive = true;
-    this.shellReloadInsertPoint = point;
-    this.shellReloadStartPosition.copy(point.position)
-      .add(new THREE.Vector3(offset[0], offset[1], offset[2]));
-    this.shellReloadStartQuaternion.copy(point.quaternion)
-      .multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2])));
-    this.clearShellInsertion();
-    // Same rules as a firing reload: a queued eject must not land mid-reload.
-    this.pendingShellEject = null;
-    this.boltShellEjected = true;
-    return true;
-  }
-
-  /** Spawns the next shell at the loading hand, ready to travel inward. */
-  startShellInsertion() {
-    const point = this.shellReloadInsertPoint;
-    const template = this.references.shellModel;
-    if (!this.shellReloadActive || !point?.parent || !template) return false;
-
-    this.clearShellInsertion();
-    const shell = template.clone(true);
-    shell.visible = true;
-    shell.position.copy(this.shellReloadStartPosition);
-    shell.quaternion.copy(this.shellReloadStartQuaternion);
-    shell.scale.copy(template.scale);
-    shell.traverse((child) => {
-      child.frustumCulled = false;
-      if (child.isMesh) {
-        child.castShadow = false;
-        child.receiveShadow = false;
-      }
-    });
-    point.parent.add(shell);
-    this.shellReloadShell = shell;
-    return true;
-  }
-
-  /** `phase` is 0..1 across one shell's insertion window. */
-  updateShellReload(phase) {
-    const shell = this.shellReloadShell;
-    const point = this.shellReloadInsertPoint;
-    if (!shell || !point) return;
-    const eased = smoothstep(THREE.MathUtils.clamp(phase, 0, 1));
-    shell.position.lerpVectors(this.shellReloadStartPosition, point.position, eased);
-    shell.quaternion.slerpQuaternions(this.shellReloadStartQuaternion, point.quaternion, eased);
-    // At the port it is inside the gun, so it is no longer drawn.
-    shell.visible = eased < 1;
-  }
-
-  /** The shell reached the port: retire the copy, the round is now chambered. */
-  commitShellInsert() {
-    this.clearShellInsertion();
-  }
-
-  finishShellReload() {
-    this.clearShellInsertion();
-    this.shellReloadActive = false;
-    this.shellReloadInsertPoint = null;
-  }
-
-  cancelShellReload() {
-    this.finishShellReload();
-  }
-
-  clearShellInsertion() {
-    if (!this.shellReloadShell) return;
-    this.shellReloadShell.parent?.remove(this.shellReloadShell);
-    this.shellReloadShell = null;
-  }
-
-  hasShellInsertPoint() {
-    return Boolean(this.references.shellInsertPoint && this.references.shellModel);
-  }
-
-  /** The loading port, in model-local space, so the support hand can reach it. */
-  getShellInsertModelPosition(target) {
-    const point = this.references.shellInsertPoint;
-    if (!point) return false;
-    this.model.updateWorldMatrix(true, true);
-    point.getWorldPosition(target);
-    this.model.worldToLocal(target);
-    return true;
-  }
-
   swapMagazine() {
     const removed = this.currentMagazine;
     if (!removed) return;
@@ -649,7 +556,6 @@ export class GLBWeaponRig {
 
   reset() {
     this.cancelReload();
-    this.cancelShellReload();
     if (this.references.bolt && this.boltBasePosition) this.references.bolt.position.copy(this.boltBasePosition);
     if (this.references.trigger && this.triggerBasePosition) {
       this.references.trigger.position.copy(this.triggerBasePosition);
@@ -720,8 +626,12 @@ function largestGeometryAxis(object) {
   return new THREE.Vector3(0, 0, 1);
 }
 
-function worldDirectionToParent(worldDirection, parent) {
-  const inverseParentRotation = parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+/** Collapses a node name to letters and digits so spacing/case never matter. */
+function normalizeNodeName(name) {
+  return String(name).toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function worldDirectionToParent(worldDirection, parent) {  const inverseParentRotation = parent.getWorldQuaternion(new THREE.Quaternion()).invert();
   return worldDirection.clone().applyQuaternion(inverseParentRotation).normalize();
 }
 

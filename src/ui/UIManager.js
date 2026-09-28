@@ -400,8 +400,10 @@ export class UIManager {
   setCrosshairStyle(displayName = '') {
     const shotgun = String(displayName).toLowerCase() === 'shotgun';
     this.crosshair.classList.toggle('shotgun-mode', shotgun);
+    // The shotgun's reticle is a wide four-bar ring with a big empty middle, so
+    // its gap has to be far larger than the rifle's few-pixel one.
     this.crosshairSpread = shotgun
-      ? { base: 10, scale: 90 }
+      ? { base: 15, scale: 150 }
       : { base: 4, scale: 650 };
   }
 

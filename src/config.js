@@ -91,9 +91,11 @@ export const GAME_CONFIG = Object.freeze({
     magazineSize: 5,
     reserveSize: 30,
     maxReserve: 60,
-    fireInterval: 0.68,
-    // Per shell. The real reload length is derived from how many are missing.
-    reloadDuration: 0.42,
+    // Minimum time between two trigger pulls (~4.5 shells a second).
+    fireInterval: 0.22,
+    // Per shell. The real reload length is derived from how many are missing,
+    // so a full tube refills in 5 x 0.15 = 0.75s.
+    reloadDuration: 0.15,
     bodyDamage: 112,
     headDamage: 168,
     range: 60,
@@ -102,8 +104,7 @@ export const GAME_CONFIG = Object.freeze({
     recoilPitch: 0.052,
     recoilYaw: 0.012,
     lowAmmoThreshold: 2,
-    // A pump gun fires one shell per trigger pull, like the pistol.
-    singleShot: true,
+    singleShot: false,
     pellets: {
       count: 8,
       // Half-angle of the cone the pellets fan out through.
@@ -151,12 +152,11 @@ export const GAME_CONFIG = Object.freeze({
         lifetime: 2.2,
         maxActive: 16,
       },
-      // Tubular reload: one shell per `shellDuration` window.
+      // Tubular reload: the tube gains one shell per `shellDuration` window.
+      // The ammo is handed over by WeaponSystem itself, so a model without a
+      // usable shell-insert point still reloads correctly.
       shellReload: {
-        shellDuration: 0.42,
-        // Where a fresh shell starts, relative to the shell-insert point.
-        insertOffset: [0, -0.13, 0.07],
-        insertRotation: [0.7, 0.3, 0.18],
+        shellDuration: 0.15,
       },
     },
   },

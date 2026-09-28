@@ -98,7 +98,7 @@ export class WeaponSystem {
     this.shellReload = {
       needed: 0,
       inserted: 0,
-      inFlight: false,
+      loaded: -1,
     };
 
     this.buildModel();
@@ -384,7 +384,7 @@ export class WeaponSystem {
     this.weaponRig?.reset();
     this.shellReload.needed = 0;
     this.shellReload.inserted = 0;
-    this.shellReload.inFlight = false;
+    this.shellReload.loaded = -1;
     this.clearTransientEffects();
     this.weaponHolder.position.copy(this.basePosition);
     this.weaponHolder.rotation.copy(this.baseRotation);
@@ -427,14 +427,10 @@ export class WeaponSystem {
     this.callbacks.onSpread?.(this.spread + (this.pelletConfig ? this.pelletConfig.spread : 0));
 
     const reloadProgress = this.reloading ? this.reloadElapsed / this.getReloadDuration() : 0;
-    if (this.isShotgun) {
-      // The shotgun never changes a magazine, so the hand feeds shells into
-      // the loading port instead of running the mag-swap animation.
-      const insertPhase = this.getShellInsertPhase();
-      const insertPoint = new THREE.Vector3();
-      const hasInsertPoint = this.weaponRig?.getShellInsertModelPosition(insertPoint) ?? false;
-      this.hands?.updateShellReload(insertPhase, hasInsertPoint ? insertPoint : null);
-    } else {
+    // The shotgun loads tubes, not magazines, so it skips the mag-swap hand
+    // animation and the mag-swap gun tilt entirely: its reload is pure ammo
+    // counting, which is also why it can be so quick.
+    if (!this.isShotgun) {
       this.hands?.updateReload(reloadProgress);
     }
     // Reload animation: tilt gun LEFT, throw mag out, spawn new, return
@@ -442,7 +438,7 @@ export class WeaponSystem {
     let reloadTiltX = 0;
     let reloadOffsetY = 0;
     let reloadOffsetX = 0;
-    if (this.reloading) {
+    if (this.reloading && !this.isShotgun) {
       const p = reloadProgress;
       const sm = (t) => { const c = Math.min(Math.max(t, 0), 1); return c * c * (3 - 2 * c); };
       if (p < 0.15) {
@@ -986,8 +982,7 @@ export class WeaponSystem {
       // loaded tube finishes quickly instead of replaying all five.
       this.shellReload.needed = Math.min(this.config.magazineSize - this.magazine, this.reserve);
       this.shellReload.inserted = 0;
-      this.shellReload.inFlight = false;
-      this.weaponRig?.beginShellReload();
+      this.shellReload.loaded = -1;
     } else {
       this.weaponRig?.beginReload();
     }
@@ -1004,23 +999,17 @@ export class WeaponSystem {
 
   /**
    * How long this reload will take. A rifle swaps its magazine in one fixed
-   * beat; a shotgun has one beat per shell it is still missing.
+   * beat; a shotgun loads one shell per beat and only for as many as are
+   * actually missing.
    */
   getReloadDuration() {
     if (!this.isShotgun) return this.config.reloadDuration;
     const shells = this.shellReload.needed || Math.max(0, this.config.magazineSize - this.magazine);
-    return Math.max(0.05, shells * (this.shellReloadSettings?.shellDuration ?? 0.42));
+    return Math.max(0.05, shells * this.getShellLoadInterval());
   }
 
-  /** 0..1 through the shell currently being fed in (0 when nothing is in flight). */
-  getShellInsertPhase() {
-    if (!this.isShotgun || !this.reloading || !this.shellReload.inFlight) return 0;
-    const shellDuration = this.shellReloadSettings?.shellDuration ?? 0.42;
-    return THREE.MathUtils.clamp(
-      (this.reloadElapsed - this.shellReload.inserted * shellDuration) / shellDuration,
-      0,
-      1,
-    );
+  getShellLoadInterval() {
+    return this.shellReloadSettings?.shellDuration ?? 0.15;
   }
 
   updateReload(delta) {
@@ -1048,61 +1037,50 @@ export class WeaponSystem {
   }
 
   /**
-   * The tubular reload: shells go in one at a time, and the ammo count rises
-   * by one for each shell that actually makes it into the gun.
+   * The tubular reload: the tube fills one shell per short beat, and the ammo
+   * count rises by one for each shell that goes in. This deliberately does not
+   * depend on the weapon model or on any animation, so a model that is missing
+   * an attachment point can never leave the reload stuck.
    */
   updateShellReload() {
-    const shellDuration = this.shellReloadSettings?.shellDuration ?? 0.42;
+    const state = this.shellReload;
+    const interval = this.getShellLoadInterval();
+    const due = Math.min(state.needed, Math.floor((this.reloadElapsed + 1e-6) / interval));
 
-    // Start the next shell as soon as the previous one has seated.
-    if (!this.shellReload.inFlight && this.shellReload.inserted < this.shellReload.needed) {
-      if (this.weaponRig?.startShellInsertion()) this.shellReload.inFlight = true;
+    while (state.inserted < due) {
+      state.inserted += 1;
+      this.magazine = Math.min(this.config.magazineSize, this.magazine + 1);
+      this.reserve = Math.max(0, this.reserve - 1);
+      this.audio.play('shell_insert');
     }
-
-    if (this.shellReload.inFlight) {
-      this.weaponRig?.updateShellReload(this.getShellInsertPhase());
-      if (this.reloadElapsed >= (this.shellReload.inserted + 1) * shellDuration) {
-        this.completeShellInsert();
-      }
+    if (state.inserted !== state.loaded) {
+      state.loaded = state.inserted;
+      this.emitAmmo();
     }
 
     this.callbacks.onReloadProgress?.(this.magazine, this.reserve, this.reloadElapsed);
 
-    // Full tube, no shells left, or the reserve ran out: stop on our own.
-    if (this.magazine >= this.config.magazineSize || this.reserve <= 0 || this.shellReload.inserted >= this.shellReload.needed) {
+    // Full tube, nothing left in reserve, or every missing shell is in: done.
+    if (this.magazine >= this.config.magazineSize || this.reserve <= 0 || state.inserted >= state.needed) {
       this.finishShellReload();
     }
   }
 
-  completeShellInsert() {
-    const state = this.shellReload;
-    if (state.inserted >= state.needed) return;
-    state.inserted += 1;
-    state.inFlight = false;
-    this.magazine = Math.min(this.config.magazineSize, this.magazine + 1);
-    this.reserve = Math.max(0, this.reserve - 1);
-    this.weaponRig?.commitShellInsert();
-    this.audio.play('shell_insert');
-    this.emitAmmo();
-  }
-
   finishShellReload() {
-    this.weaponRig?.finishShellReload();
     this.reloading = false;
     this.reloadElapsed = 0;
     this.shellReload.inserted = 0;
-    this.shellReload.inFlight = false;
+    this.shellReload.loaded = -1;
     this.callbacks.onReloadEnd?.();
     this.emitAmmo();
   }
 
   /** Firing out of a reload keeps whatever is already seated. */
   cancelShellReload() {
-    this.weaponRig?.cancelShellReload();
     this.reloading = false;
     this.reloadElapsed = 0;
     this.shellReload.inserted = 0;
-    this.shellReload.inFlight = false;
+    this.shellReload.loaded = -1;
     this.callbacks.onReloadEnd?.();
     this.emitAmmo();
   }

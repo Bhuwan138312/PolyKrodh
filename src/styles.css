@@ -1055,13 +1055,13 @@ button {
 
 /*
  * Shotgun: the traditional four separated bars with a clearly empty middle.
- * No centre dot at all, a larger body than the rifle crosshair, and a wider
- * gap that tracks the pellet cone (set from JS via --cross-gap).
+ * No centre dot at all, a much larger body than the rifle crosshair, and a
+ * wide gap that tracks the pellet cone (set from JS via --cross-gap).
  */
 .crosshair.shotgun-mode {
-  --cross-gap: 14px;
-  width: 56px;
-  height: 56px;
+  --cross-gap: 15px;
+  width: 68px;
+  height: 68px;
 }
 
 .crosshair.shotgun-mode .ch-dot {
@@ -1070,32 +1070,32 @@ button {
 
 .crosshair.shotgun-mode .ch-top,
 .crosshair.shotgun-mode .ch-bottom {
-  left: 27px;
+  left: 32px;
   width: 3px;
-  height: 11px;
+  height: 13px;
 }
 
 .crosshair.shotgun-mode .ch-top {
-  top: calc(28px - var(--cross-gap));
+  top: calc(34px - var(--cross-gap));
 }
 
 .crosshair.shotgun-mode .ch-bottom {
-  bottom: calc(28px - var(--cross-gap));
+  bottom: calc(34px - var(--cross-gap));
 }
 
 .crosshair.shotgun-mode .ch-left,
 .crosshair.shotgun-mode .ch-right {
-  top: 27px;
-  width: 11px;
+  top: 32px;
+  width: 13px;
   height: 3px;
 }
 
 .crosshair.shotgun-mode .ch-left {
-  left: calc(28px - var(--cross-gap));
+  left: calc(34px - var(--cross-gap));
 }
 
 .crosshair.shotgun-mode .ch-right {
-  right: calc(28px - var(--cross-gap));
+  right: calc(34px - var(--cross-gap));
 }
 
 .hit-marker {
