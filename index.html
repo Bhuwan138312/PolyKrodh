@@ -18,6 +18,19 @@
     <div id="hud" class="hud is-hidden" aria-live="polite">
       <div class="damage-vignette" id="damage-vignette"></div>
 
+      <div id="scoreboard" class="scoreboard">
+        <div class="sb-side sb-left">
+          <div class="sb-rows" id="sb-rows-mine"></div>
+        </div>
+        <div class="sb-center">
+          <span class="sb-alive-label">ALIVE</span>
+          <strong class="sb-alive" id="sb-alive">0</strong>
+        </div>
+        <div class="sb-side sb-right">
+          <div class="sb-rows" id="sb-rows-enemy"></div>
+        </div>
+      </div>
+
       <div class="hud-top-left">
         <div class="eyebrow">OPERATIVE STATUS</div>
         <div class="health-row">
@@ -64,6 +77,7 @@
         <i></i><i></i><i></i><i></i>
       </div>
       <div id="kill-feed" class="kill-feed"></div>
+      <div id="duel-banner" class="duel-banner"></div>
       <div id="reload-prompt" class="reload-prompt">RELOAD <kbd>R</kbd></div>
       <div id="controls-overlay" class="controls-overlay">
         <div class="controls-list">
@@ -113,11 +127,10 @@
         </div>
 
         <div class="difficulty-block">
-          <div class="section-label">SELECT THREAT LEVEL</div>
+          <div class="section-label">SELECT GAME MODE</div>
           <div class="difficulty-options" role="group" aria-label="Difficulty" style="display: flex; gap: 8px;">
-            <button class="difficulty-button" data-difficulty="training" style="flex: 1;">TRAIN<small>0 HOSTILES</small></button>
-            <button class="difficulty-button active" data-difficulty="easy" style="flex: 1;">EASY<small>15 HOSTILES</small></button>
-            <button class="difficulty-button" data-difficulty="hard" style="flex: 1;">HARD<small>25 HOSTILES</small></button>
+            <button class="difficulty-button" data-difficulty="training" style="flex: 1;">TRAIN<small>NO HOSTILES</small></button>
+            <button class="difficulty-button active" data-difficulty="duel" style="flex: 1;">1V1 BOT<small>PRO DUEL</small></button>
           </div>
         </div>
 

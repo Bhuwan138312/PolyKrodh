@@ -49,6 +49,9 @@ export class PlayerController {
     this.adsActive = false;
     this.damageFlash = 0;
     this.lastDamageDirection = 0;
+    // Whoever landed the most recent damaging shot, so the solo death cam can
+    // look at the right bot. Cleared on reset.
+    this.lastDamager = null;
     this.weapon = null;
     this.onHealthChanged = null;
     this.onDeath = null;
@@ -69,6 +72,7 @@ export class PlayerController {
 
   reset(spawn) {
     this.health.reset();
+    this.lastDamager = null;
     this.root.position.copy(spawn);
     this.root.rotation.set(0, 0, 0);
     this.camera.position.set(0, this.config.eyeHeight, 0);

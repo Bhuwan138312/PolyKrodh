@@ -53,6 +53,7 @@ export class NetworkManager {
       console.log('Disconnected from server');
       this.connected = false;
       this.clearRemotePlayers();
+      this.game.scoreboard?.reset();
     });
 
     this.socket.on('roomStatus', (data) => {
@@ -92,6 +93,7 @@ export class NetworkManager {
         }
         this.game.ui.updateMultiplayerScores(myKills, myDeaths, otherKills, otherDeaths, otherCount);
       }
+      this.game.scoreboard?.sync(players, this.socket.id);
     });
 
     // When a new player joins while we are already in
@@ -106,6 +108,7 @@ export class NetworkManager {
       delete this.lobbyPlayers[id];
       if (!this.matchStarted) this.updateLobbyUI();
       this.removeRemotePlayer(id);
+      this.game.scoreboard?.remove(id);
     });
 
     // When someone moves
@@ -162,6 +165,7 @@ export class NetworkManager {
     // When someone dies
     this.socket.on('playerDied', (data) => {
       if (!data || typeof data.victimId !== 'string') return;
+      this.game.scoreboard?.setDead(data.victimId, true);
       if (data.victimId === this.socket.id) {
         // We died! The server already decided this, so our own health adopts
         // the authoritative 0 rather than inferring it from a hit.
@@ -190,10 +194,13 @@ export class NetworkManager {
         }
       }
       this.game.ui.updateMultiplayerScores(myKills, myDeaths, otherKills, otherDeaths, otherCount);
+      // Full authoritative snapshot - drives the top scoreboard.
+      this.game.scoreboard?.sync(players, this.socket.id);
     });
 
     this.socket.on('matchFinished', (data) => {
       this.matchStarted = false;
+      this.game.scoreboard?.reset();
       this.game.finishMultiplayerMatch(data.winner, data.stats);
     });
 
@@ -208,6 +215,7 @@ export class NetworkManager {
         rp.mesh.position.set(playerInfo.x, playerInfo.y + 0.9, playerInfo.z);
         rp.targetPosition.set(playerInfo.x, playerInfo.y, playerInfo.z);
       }
+      this.game.scoreboard?.setDead(playerInfo.id, false);
     });
 
     // When we take damage from someone else
@@ -259,6 +267,7 @@ export class NetworkManager {
     }
     this.connected = false;
     this.clearRemotePlayers();
+    this.game.scoreboard?.reset();
   }
 
   addRemotePlayer(playerInfo) {

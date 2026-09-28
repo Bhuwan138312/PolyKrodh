@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { BOT_TYPES } from '../config.js';
 import { HealthSystem } from '../player/HealthSystem.js';
+import { buildMinecraftCharacter, getBotSkin } from '../characters/MinecraftCharacter.js';
 
 export const BotState = Object.freeze({
   IDLE: 'IDLE',
@@ -13,7 +14,7 @@ export const BotState = Object.freeze({
 });
 
 export class EnemyAI {
-  constructor({ scene, arena, navigation, effects, audio, type, spawn, difficulty, id, coverClaims, onDeath }) {
+  constructor({ scene, arena, navigation, effects, audio, type, spawn, difficulty, id, coverClaims, onDeath, mapName }) {
     this.scene = scene;
     this.arena = arena;
     this.navigation = navigation;
@@ -25,6 +26,10 @@ export class EnemyAI {
     this.id = id;
     this.coverClaims = coverClaims ?? new Map();
     this.onDeath = onDeath;
+    // The small arena uses the Minecraft-style blocky character; other maps
+    // keep the legacy low-poly model.
+    this.mapName = mapName ?? 'arena';
+    this.style = this.mapName === 'smallarena' ? 'minecraft' : 'legacy';
 
     this.root = new THREE.Group();
     this.root.name = `${this.type.name}-${id}`;
@@ -89,6 +94,46 @@ export class EnemyAI {
     this.model.name = 'BotModel';
     this.root.add(this.model);
 
+    if (this.style === 'minecraft') {
+      this.buildMinecraftModel();
+    } else {
+      this.buildLegacyModel();
+    }
+    this.tagModelMeshes();
+  }
+
+  buildMinecraftModel() {
+    const { texture, imageData } = getBotSkin(this.typeKey);
+    const character = buildMinecraftCharacter({ texture, imageData });
+    this.model.add(character.group);
+
+    this.head = character.head;
+    this.headOverlay = character.headOverlay;
+    this.torso = character.torso;
+    this.leftArm = character.leftArm;
+    this.rightArm = character.rightArm;
+    this.leftLeg = character.leftLeg;
+    this.rightLeg = character.rightLeg;
+    this.gun = character.gun;
+    this.skinMaterial = character.skinMaterial;
+    this.overlayMaterial = character.overlayMaterial;
+    this.gunMaterial = character.gunMaterial;
+    this.materials = character.materials;
+
+    this.muzzle = new THREE.Object3D();
+    this.muzzle.position.set(0.30, 1.02, -0.85);
+    this.root.add(this.muzzle);
+    this.muzzleFlash = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.13, 0),
+      new THREE.MeshBasicMaterial({ color: 0xffd24d, transparent: true, opacity: 0.9, depthWrite: false }),
+    );
+    this.muzzleFlash.position.copy(this.muzzle.position);
+    this.muzzleFlash.scale.z = 1.8;
+    this.muzzleFlash.visible = false;
+    this.root.add(this.muzzleFlash);
+  }
+
+  buildLegacyModel() {
     const bodyColor = new THREE.Color(this.type.color);
     this.bodyMaterial = new THREE.MeshStandardMaterial({
       color: bodyColor, roughness: 0.86, flatShading: true,
@@ -132,11 +177,13 @@ export class EnemyAI {
     this.muzzleFlash.scale.z = 1.8;
     this.muzzleFlash.visible = false;
     this.root.add(this.muzzleFlash);
+  }
 
+  tagModelMeshes() {
     this.hitMeshes = [];
     this.model.traverse((child) => {
       child.userData.bot = this;
-      child.userData.head = child === this.head;
+      child.userData.head = child === this.head || child === this.headOverlay;
       if (child.isMesh) {
         child.userData.weaponProjectileTarget = true;
         child.castShadow = true;
@@ -261,7 +308,13 @@ export class EnemyAI {
         this.state = BotState.ATTACK;
         this.chooseCombatPosition(context);
       } else {
-        this.moveToward(target, this.type.speed, delta, this.typeKey === 'aggressive' ? 0.9 : 1.3);
+        // A bot with a `chaseSpeed` (the 1v1 pro) only matches the player's
+        // sprint while it actually has eyes on them; searching and
+        // repositioning stay at a human walking pace.
+        const speed = this.canSee && Number.isFinite(this.type.chaseSpeed)
+          ? this.type.chaseSpeed
+          : this.type.speed;
+        this.moveToward(target, speed, delta, this.typeKey === 'aggressive' ? 0.9 : 1.3);
       }
       return;
     }
@@ -600,6 +653,9 @@ export class EnemyAI {
     this.audio.play('enemyShot', this.root.position);
     if (actuallyHits) {
       const damage = Math.round(randomBetween(this.type.damage) * this.damageMultiplier);
+      // Record the shooter before applying damage: if this shot is the killing
+      // blow, the death cam needs to know who to look at.
+      player.lastDamager = this;
       player.health.damage(damage);
     }
   }
@@ -643,6 +699,26 @@ export class EnemyAI {
     const walk = Math.min(this.currentSpeed / 3.5, 1);
     this.walkPhase += delta * (4.5 + this.currentSpeed * 1.5);
     const swing = Math.sin(this.walkPhase) * 0.52 * walk;
+
+    if (this.style === 'minecraft') {
+      this.leftLeg.rotation.x = swing;
+      this.rightLeg.rotation.x = -swing;
+      // Arms hang relaxed with a mild counter-swing; the right arm nudges
+      // toward the rifle while recoil drives the gun and torso.
+      this.leftArm.rotation.x = -0.08 - swing * 0.3;
+      this.rightArm.rotation.x = 0.85 + swing * 0.12;
+      this.gun.position.z = -0.42 + this.recoilKick * 0.08;
+      this.torso.rotation.x = this.recoilKick * 0.08;
+      this.recoilKick *= Math.exp(-10 * delta);
+      this.hitFlash *= Math.exp(-7.5 * delta);
+
+      const flashAmount = Math.min(this.hitFlash, 1);
+      this.skinMaterial.emissiveIntensity = flashAmount * 0.9;
+      if (this.overlayMaterial) this.overlayMaterial.emissiveIntensity = flashAmount * 0.9;
+      this.gunMaterial.emissiveIntensity = flashAmount * 0.55;
+      return;
+    }
+
     this.leftLeg.rotation.x = swing;
     this.rightLeg.rotation.x = -swing;
     this.leftArm.rotation.x = -0.9 + swing * 0.08;

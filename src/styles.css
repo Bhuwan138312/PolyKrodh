@@ -597,6 +597,166 @@ button {
   text-shadow: 0 1px 5px rgba(0, 0, 0, 0.72);
 }
 
+/* ---------------------------------------------------------------------------
+   Multiplayer scoreboard - a full-width kill/death bar pinned to the top of the
+   screen, in the style of a battle-royale HUD. Only visible in multiplayer.
+   --------------------------------------------------------------------------- */
+.scoreboard {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  display: none;
+  align-items: stretch;
+  width: min(760px, 62vw);
+  transform: translateX(-50%);
+  background: linear-gradient(180deg, rgba(4, 14, 20, 0.92), rgba(4, 14, 20, 0.74));
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
+  /* Angled outer ends, like a battle-royale team bar. */
+  clip-path: polygon(22px 0, calc(100% - 22px) 0, 100% 100%, 0 100%);
+  border-top: 2px solid var(--amber);
+  color: var(--white);
+  transition: opacity 0.25s ease;
+}
+
+.hud.has-scoreboard .scoreboard {
+  display: flex;
+}
+
+/* The scoreboard supersedes the single-line objective chip in multiplayer. */
+.hud.has-scoreboard .hud-top-center {
+  display: none;
+}
+
+/* Make room for the bar so the health block and kill feed clear it. */
+.hud.has-scoreboard .hud-top-left {
+  top: 62px;
+}
+
+.sb-side {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 5px 16px 6px;
+}
+
+.sb-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sb-left .sb-rows {
+  align-items: flex-end;
+}
+
+.sb-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  max-width: 100%;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+}
+
+/* DOM order is always [name, deaths, kills]. The right column is mirrored so
+   that on both sides the big kill count sits nearest the centre. */
+.sb-right .sb-entry {
+  flex-direction: row-reverse;
+}
+
+.sb-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.sb-entry.is-me .sb-name {
+  color: var(--cyan);
+}
+
+/* Dead players stay listed so you can read the score, but recede. */
+.sb-entry.is-dead {
+  opacity: 0.42;
+}
+
+.sb-entry.is-dead .sb-name {
+  text-decoration: line-through;
+}
+
+.sb-kills {
+  color: var(--white);
+  font: 700 1.05rem / 1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: 0.04em;
+}
+
+.sb-entry.is-me .sb-kills {
+  color: var(--amber);
+}
+
+.sb-deaths {
+  color: var(--muted);
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+}
+
+.sb-deaths::before {
+  content: "D ";
+  opacity: 0.6;
+}
+
+/* Brief highlight whenever a number changes. */
+.sb-kills.is-bumped {
+  animation: sb-bump 0.55s ease;
+}
+
+@keyframes sb-bump {
+  0% {
+    color: var(--amber);
+    text-shadow: 0 0 10px rgba(242, 196, 92, 0.85);
+    transform: scale(1.28);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+.sb-more {
+  color: var(--muted);
+  font-size: 0.55rem;
+  letter-spacing: 0.14em;
+  text-align: right;
+  opacity: 0.75;
+}
+
+.sb-center {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-width: 78px;
+  padding: 5px 14px 6px;
+  background: rgba(242, 196, 92, 0.14);
+  border-right: 1px solid rgba(242, 196, 92, 0.3);
+  border-left: 1px solid rgba(242, 196, 92, 0.3);
+}
+
+.sb-alive-label {
+  color: var(--amber);
+  font-size: 0.5rem;
+  letter-spacing: 0.22em;
+}
+
+.sb-alive {
+  font: 700 1.5rem / 1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: 0.03em;
+}
+
+.sb-alive.is-bumped {
+  animation: sb-bump 0.55s ease;
+}
+
 .hud-top-left {
   position: absolute;
   top: 28px;
@@ -923,6 +1083,36 @@ button {
   background: var(--amber);
 }
 
+/* Solo death cam: a centred countdown while the camera watches the killer. */
+.duel-banner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 30px;
+  transform: translate(-50%, -50%);
+  background: linear-gradient(180deg, rgba(4, 14, 20, 0.9), rgba(4, 14, 20, 0.72));
+  border: 1px solid rgba(242, 196, 92, 0.35);
+  color: var(--red);
+  font-size: 0.66rem;
+  letter-spacing: 0.28em;
+  text-align: center;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.85);
+}
+
+.duel-banner.visible {
+  display: flex;
+}
+
+.duel-banner strong {
+  color: var(--amber);
+  font: 700 1.5rem / 1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: 0.1em;
+}
+
 .kill-feed {
   position: absolute;
   top: 105px;
@@ -1114,6 +1304,23 @@ button {
 
   .hud-top-center {
     top: 14px;
+  }
+
+  .scoreboard {
+    width: min(560px, 84vw);
+  }
+
+  .hud.has-scoreboard .hud-top-left {
+    top: 54px;
+  }
+
+  .sb-side {
+    padding: 4px 10px 5px;
+  }
+
+  .sb-center {
+    min-width: 62px;
+    padding: 4px 9px 5px;
   }
 
   .controls-grid {

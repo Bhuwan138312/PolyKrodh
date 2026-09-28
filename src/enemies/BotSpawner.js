@@ -14,18 +14,64 @@ export class BotSpawner {
     this.nextId = 1;
   }
 
-  spawnMatch(playerSpawn, difficulty) {
+  spawnMatch(playerSpawn, difficulty, mapName) {
     this.clear();
-    const typeOrder = this.buildTypeOrder(difficulty.count);
+    this.mapName = mapName ?? this.mapName ?? 'arena';
+    // A difficulty can pin the bot type (the 1v1 duel always wants the pro);
+    // otherwise fall back to the normal random type rotation.
+    const forcedType = difficulty.botType;
+    const typeOrder = forcedType
+      ? new Array(difficulty.count).fill(forcedType)
+      : this.buildTypeOrder(difficulty.count);
+    const spawnPoints = this.pickSpawnPoints(playerSpawn, difficulty.count, 20);
+
+    typeOrder.forEach((type, index) => {
+      this.bots.push(this.createBot(type, spawnPoints[index], difficulty));
+    });
+    return this.bots;
+  }
+
+  /**
+   * Replace a dead bot with a fresh one at the same slot. Used by the 1v1 duel
+   * so a round ends and a new one begins instead of ending the match.
+   */
+  respawn(bot, playerSpawn, difficulty) {
+    const index = this.bots.indexOf(bot);
+    if (index < 0) return null;
+    const type = difficulty.botType || bot.typeKey;
+    const points = this.pickSpawnPoints(playerSpawn, 1, 14);
+    const fresh = this.createBot(type, points[0], difficulty);
+    this.bots[index] = fresh;
+    return fresh;
+  }
+
+  createBot(type, spawn, difficulty) {
+    return new EnemyAI({
+      scene: this.scene,
+      arena: this.arena,
+      navigation: this.navigation,
+      effects: this.effects,
+      audio: this.audio,
+      type,
+      spawn,
+      difficulty,
+      id: this.nextId++,
+      coverClaims: this.coverClaims,
+      onDeath: this.onDeath,
+      mapName: this.mapName,
+    });
+  }
+
+  pickSpawnPoints(playerSpawn, count, minDistance) {
     const spawnPoints = [];
-    for (let i = 0; i < difficulty.count; i++) {
+    for (let i = 0; i < count; i++) {
       let spawn = null;
       for (let attempts = 0; attempts < 150; attempts++) {
         const x = Math.floor(Math.random() * this.navigation.size);
         const z = Math.floor(Math.random() * this.navigation.size);
         if (this.navigation.isWalkableCell(x, z)) {
           const pt = this.navigation.cellToWorld(x, z);
-          if (pt.distanceTo(playerSpawn) > 20) {
+          if (pt.distanceTo(playerSpawn) > minDistance) {
             const tooClose = spawnPoints.some(s => s.distanceTo(pt) < 1.5);
             if (!tooClose) {
               const snapped = this.arena.groundSnap(pt, 0.45, 1.85);
@@ -43,25 +89,7 @@ export class BotSpawner {
       }
       spawnPoints.push(spawn);
     }
-
-    typeOrder.forEach((type, index) => {
-      const spawn = spawnPoints[index];
-      const bot = new EnemyAI({
-        scene: this.scene,
-        arena: this.arena,
-        navigation: this.navigation,
-        effects: this.effects,
-        audio: this.audio,
-        type,
-        spawn,
-        difficulty,
-        id: this.nextId++,
-        coverClaims: this.coverClaims,
-        onDeath: this.onDeath,
-      });
-      this.bots.push(bot);
-    });
-    return this.bots;
+    return spawnPoints;
   }
 
   buildTypeOrder(count) {

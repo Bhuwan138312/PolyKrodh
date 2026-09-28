@@ -134,6 +134,16 @@ export const GAME_CONFIG = Object.freeze({
       label: 'TRAINING', count: 0, accuracy: 0,
       reactionMultiplier: 1, damageMultiplier: 1,
     },
+    /**
+     * The single-player duel: exactly one PRO bot. `botType` makes the spawner
+     * ignore the random type rotation so the opponent is always the pro.
+     * `easy`/`normal`/`hard` are kept as valid keys because multiplayer calls
+     * startMatch('normal', ...); they are no longer offered in the solo menu.
+     */
+    duel: {
+      label: '1V1 BOT', count: 1, accuracy: 0, botType: 'pro',
+      reactionMultiplier: 1, damageMultiplier: 1,
+    },
     easy: {
       label: 'EASY', count: 15, accuracy: -0.08,
       reactionMultiplier: 1.35, damageMultiplier: 0.75,
@@ -167,5 +177,18 @@ export const BOT_TYPES = Object.freeze({
     health: 115, speed: 2.55, detection: 43, attackRange: 34,
     preferredRange: 23, reaction: [0.58, 0.88], fireInterval: [0.82, 1.2],
     accuracy: [0.77, 0.87], burst: [2, 3], damage: [10, 13], coverChance: 0.72,
+  },
+  /**
+   * The 1v1 duel opponent. Tuned to take roughly 7 rifle body shots
+   * (weapon.bodyDamage 34 -> 6 hits is 204, 7 hits is 238, so 210 needs 7).
+   * `chaseSpeed` matches the player's sprintSpeed so it can run you down once
+   * it has eyes on you, but it walks at a human `speed` when repositioning.
+   */
+  pro: {
+    name: 'PRO', color: 0xb03a48, accent: 0xffd166,
+    health: 210, speed: 4.6, chaseSpeed: 9.5,
+    detection: 46, attackRange: 32,
+    preferredRange: 10, reaction: [0.34, 0.6], fireInterval: [0.58, 0.84],
+    accuracy: [0.66, 0.79], burst: [2, 4], damage: [7, 10], coverChance: 0.3,
   },
 });

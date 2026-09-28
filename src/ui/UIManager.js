@@ -35,13 +35,14 @@ export class UIManager {
       document.querySelector('#weapon-outline-2')
     ];
     this.killFeed = document.querySelector('#kill-feed');
+    this.duelBanner = document.querySelector('#duel-banner');
     this.captureHint = document.querySelector('#capture-hint');
     this.moveState = document.querySelector('#move-state');
     this.sensitivity = document.querySelector('#sensitivity');
     this.sensitivityValue = document.querySelector('#sensitivity-value');
     this.controlsOverlay = document.querySelector('#controls-overlay');
     this.fpsCounter = document.querySelector('#fps-counter');
-    this.difficulty = 'normal';
+    this.difficulty = 'duel';
     this.map = 'arena';
     this.callbacks = {};
     this.hitMarkerTimer = 0;
@@ -417,8 +418,24 @@ export class UIManager {
     this.hitMarkerTimer = setTimeout(() => this.hitMarker.classList.remove('active', 'headshot'), 150);
   }
 
-  announceKill(typeName = 'HOSTILE') {
-    const item = document.createElement('div');
+  /**
+   * Solo death-cam countdown. `null` hides it; a number shows that many
+   * seconds remaining before the duel round respawns, and `killerName` names
+   * the bot the camera is locked onto.
+   */
+  setDuelBanner(seconds, killerName = null) {
+    if (!this.duelBanner) return;
+    if (seconds === null || seconds === undefined) {
+      this.duelBanner.classList.remove('visible');
+      this.duelBanner.textContent = '';
+      return;
+    }
+    this.duelBanner.classList.add('visible');
+    const by = killerName ? ` BY ${killerName}` : '';
+    this.duelBanner.innerHTML = `ELIMINATED${by}<strong>RESPAWN IN ${Math.max(1, Math.ceil(seconds))}</strong>`;
+  }
+
+  announceKill(typeName = 'HOSTILE') {    const item = document.createElement('div');
     item.className = 'kill-item';
     item.innerHTML = `<span>ELIMINATED</span><strong>${typeName}</strong>`;
     this.killFeed.prepend(item);
