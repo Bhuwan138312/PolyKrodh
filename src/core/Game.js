@@ -14,6 +14,9 @@ import { NetworkManager } from './NetworkManager.js';
 
 // How long the solo death cam holds on the killer before the round respawns.
 const DEATH_CAM_SECONDS = 2.6;
+// How long a killed duel bot stays down before it comes back. Overlaps the
+// player's death cam so both sides return around the same time.
+const DUEL_BOT_RESPAWN_SECONDS = 2.6;
 
 export class Game {
   constructor(container) {
@@ -606,11 +609,12 @@ export class Game {
     this.ui.announceKill(bot.type.name);
     this.ui.setEnemies(this.spawner.getAlive());
     if (this.isDuel) {
-      // A duel round is lost, not the match: the next one spawns shortly.
+      // A duel round is lost, not the match: the bot comes back shortly, at a
+      // random map spawn, and the fight continues.
       this.duelKills += 1;
       this.duelBotDeaths += 1;
       this.botRespawnPending = bot;
-      this.botRespawnTimer = 1.6;
+      this.botRespawnTimer = DUEL_BOT_RESPAWN_SECONDS;
       this.refreshDuelScore();
       return;
     }
@@ -718,8 +722,20 @@ export class Game {
     this.respawnDuelRound();
   }
 
+  /**
+   * A random map spawn for the next duel round. getPlayerSpawn already picks
+   * uniformly from the map's own spawn points, so the player never keeps
+   * landing in the same place.
+   */
+  pickDuelSpawn(avoidPosition = null) {
+    return this.arena.getPlayerSpawn(avoidPosition);
+  }
+
   respawnDuelRound() {
-    this.player.reset(this.arena.getPlayerSpawn());
+    // The respawn point is drawn at random from the map's spawns, and the
+    // player's own reset covers health, weapon/ammo/reload, camera, movement
+    // and every other piece of state the controller owns.
+    this.player.reset(this.pickDuelSpawn());
     this.activeWeapon.reset();
     this.input.setEnabled(true);
     this.input.clear();
@@ -732,11 +748,12 @@ export class Game {
   /** Bring the opponent back for the next duel round. */
   updateDuelBotRespawn(delta) {
     if (!this.botRespawnPending) return;
-    const bot = this.botRespawnPending;
-    if (!bot.removed) return; // wait for the death animation to finish
     this.botRespawnTimer -= delta;
     if (this.botRespawnTimer > 0) return;
+    const bot = this.botRespawnPending;
     this.botRespawnPending = null;
+    // The dead bot is usually already out of the list (update() drops removed
+    // bots), so respawn() appends the fresh one rather than failing.
     this.spawner.respawn(bot, this.player.root.position, this.difficulty);
     this.updateDynamicActors();
     this.ui.setEnemies(this.spawner.getAlive());

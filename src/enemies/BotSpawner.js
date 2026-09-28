@@ -34,15 +34,38 @@ export class BotSpawner {
   /**
    * Replace a dead bot with a fresh one at the same slot. Used by the 1v1 duel
    * so a round ends and a new one begins instead of ending the match.
+   *
+   * The dead bot is normally gone from `this.bots` by the time this runs
+   * (update() drops removed bots), so a missing entry is normal, not an error:
+   * the fresh bot is simply appended. A dead bot still in the list is replaced
+   * in place so its cover claim and slot are released in order.
    */
   respawn(bot, playerSpawn, difficulty) {
-    const index = this.bots.indexOf(bot);
-    if (index < 0) return null;
     const type = difficulty.botType || bot.typeKey;
-    const points = this.pickSpawnPoints(playerSpawn, 1, 14);
-    const fresh = this.createBot(type, points[0], difficulty);
-    this.bots[index] = fresh;
+    const fresh = this.createBot(type, this.pickRespawnPoint(playerSpawn), difficulty);
+    const index = this.bots.indexOf(bot);
+    if (index >= 0) {
+      this.bots[index] = fresh;
+    } else {
+      this.bots.push(fresh);
+    }
     return fresh;
+  }
+
+  /**
+   * Where a respawning bot appears. Maps that ship their own spawn points use
+   * them, drawn at random on every respawn so a round never repeats the same
+   * spot; everything else falls back to the existing nav-grid search. The
+   * chosen point is ground-snapped, so it can never be inside geometry.
+   */
+  pickRespawnPoint(playerSpawn) {
+    const mapSpawns = this.arena.botSpawns;
+    if (this.arena.hasMapSpawns && mapSpawns?.length) {
+      const pick = mapSpawns[Math.floor(Math.random() * mapSpawns.length)].clone();
+      const snapped = this.arena.groundSnap(pick, 0.45, 1.85);
+      return snapped ?? pick;
+    }
+    return this.pickSpawnPoints(playerSpawn, 1, 14)[0];
   }
 
   createBot(type, spawn, difficulty) {
