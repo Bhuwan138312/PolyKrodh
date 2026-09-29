@@ -598,23 +598,56 @@ button {
 }
 
 /* ---------------------------------------------------------------------------
-   Multiplayer scoreboard - a full-width kill/death bar pinned to the top of the
-   screen, in the style of a battle-royale HUD. Only visible in multiplayer.
+   Team deathmatch scoreboard.
+
+   One thin bar at the top centre, reading left to right as
+   [ BLUE 8 | TEAM 1 ]  [ 5:00 ]  [ TEAM 2 | RED 7 ].
+
+   The sides are fixed and never swapped: blue is always the player's own team
+   and always on the left, red is always the opponents and always on the right.
+
+   The geometry is soft, not angular: both teams are rounded cards, and the score
+   is printed into the coloured end of its card with a diagonal seam rather than
+   sitting in a box beside it. The clock is a wide, flat plate - flat top and
+   bottom, short angled shoulders, sides tapering in slightly - with every
+   vertex rounded. It is nearly three times as wide as it is tall, which is what
+   keeps it a HUD plate and stops it reading as a diamond. Only visible in
+   multiplayer.
    --------------------------------------------------------------------------- */
 .scoreboard {
+  --tdm-red: #e2211f;
+  --tdm-blue: #1f6fd4;
+  /* The HUD material: not grey, a cool near-black, translucent enough to read
+     the world through but opaque enough to stay legible. */
+  --tdm-hud: rgba(13, 15, 19, 0.84);
+  --tdm-hud-deep: rgba(7, 8, 11, 0.92);
+  --tdm-edge: rgba(255, 255, 255, 0.085);
+  /* The card radius. Noticeable, but still a HUD panel and not a lozenge. */
+  --tdm-radius: 9px;
+  /* The one diagonal in the bar: the seam where a score meets its name panel. */
+  --tdm-cut: 17px;
+  --tdm-team-h: 46px;
+  --tdm-clock-h: 54px;
+  --tdm-score-w: 68px;
+  --tdm-clock-w: 147px;
+  /* How far the clock's BOTTOM edge is drawn in from its top. This is the shape:
+     both sides lean the opposite way from each other - the left edge falls away
+     left, the right edge falls away right - so the panel is symmetric, where a
+     parallelogram's two sides would lean the same way. The longer edge is on
+     top, the shorter one on the bottom. */
+  --tdm-clock-inset: 22px;
+
   position: absolute;
-  top: 0;
+  z-index: 3;
+  top: 12px;
   left: 50%;
   display: none;
-  align-items: stretch;
-  width: min(760px, 62vw);
+  align-items: center;
+  gap: 6px;
+  width: min(640px, 54vw);
   transform: translateX(-50%);
-  background: linear-gradient(180deg, rgba(4, 14, 20, 0.92), rgba(4, 14, 20, 0.74));
-  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.55);
-  /* Angled outer ends, like a battle-royale team bar. */
-  clip-path: polygon(22px 0, calc(100% - 22px) 0, 100% 100%, 0 100%);
-  border-top: 2px solid var(--amber);
-  color: var(--white);
+  /* Depth, so the bar sits above the world rather than on it. */
+  filter: drop-shadow(0 3px 10px rgba(0, 0, 0, 0.55));
   transition: opacity 0.25s ease;
 }
 
@@ -627,138 +660,135 @@ button {
   display: none;
 }
 
-/* Make room for the bar so the health block and kill feed clear it. */
+/* Clear the bar so the health block starts below it rather than behind it. */
 .hud.has-scoreboard .hud-top-left {
-  top: 62px;
+  top: 84px;
 }
 
-.sb-side {
+/* ---------------------------------------------------------------- team cards */
+.tdm-team {
+  --team: var(--tdm-blue);
+  position: relative;
+  display: flex;
   flex: 1 1 0;
+  align-items: center;
+  height: var(--tdm-team-h);
   min-width: 0;
-  padding: 5px 16px 6px;
-}
-
-.sb-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.sb-left .sb-rows {
-  align-items: flex-end;
-}
-
-.sb-entry {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  max-width: 100%;
-  font-size: 0.6rem;
-  letter-spacing: 0.1em;
-  white-space: nowrap;
-}
-
-/* DOM order is always [name, deaths, kills]. The right column is mirrored so
-   that on both sides the big kill count sits nearest the centre. */
-.sb-right .sb-entry {
-  flex-direction: row-reverse;
-}
-
-.sb-name {
+  background: var(--tdm-hud);
+  border-radius: var(--tdm-radius);
+  box-shadow: inset 0 0 0 1px var(--tdm-edge), 0 2px 8px rgba(0, 0, 0, 0.35);
+  /* This is what rounds the score block's outer corners: the child is clipped
+     to the card's own rounded shape, so the colour follows the card's radius
+     while still being cut by its own diagonal seam. */
   overflow: hidden;
-  text-overflow: ellipsis;
-  color: var(--muted);
-  font-weight: 700;
 }
 
-.sb-entry.is-me .sb-name {
-  color: var(--cyan);
+.tdm-red {
+  --team: var(--tdm-red);
 }
 
-/* Dead players stay listed so you can read the score, but recede. */
-.sb-entry.is-dead {
-  opacity: 0.42;
-}
-
-.sb-entry.is-dead .sb-name {
-  text-decoration: line-through;
-}
-
-.sb-kills {
-  color: var(--white);
-  font: 700 1.05rem / 1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
-  letter-spacing: 0.04em;
-}
-
-.sb-entry.is-me .sb-kills {
-  color: var(--amber);
-}
-
-.sb-deaths {
-  color: var(--muted);
-  font-size: 0.58rem;
-  letter-spacing: 0.08em;
-}
-
-.sb-deaths::before {
-  content: "D ";
-  opacity: 0.6;
-}
-
-/* Brief highlight whenever a number changes. */
-.sb-kills.is-bumped {
-  animation: sb-bump 0.55s ease;
-}
-
-@keyframes sb-bump {
-  0% {
-    color: var(--amber);
-    text-shadow: 0 0 10px rgba(242, 196, 92, 0.85);
-    transform: scale(1.28);
-  }
-  100% {
-    transform: scale(1);
-  }
-}
-
-.sb-more {
-  color: var(--muted);
-  font-size: 0.55rem;
-  letter-spacing: 0.14em;
-  text-align: right;
-  opacity: 0.75;
-}
-
-.sb-center {
+/* The score, printed into the coloured end of the card it belongs to. */
+.tdm-score {
   display: flex;
   flex: 0 0 auto;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  min-width: 78px;
-  padding: 5px 14px 6px;
-  background: rgba(242, 196, 92, 0.14);
-  border-right: 1px solid rgba(242, 196, 92, 0.3);
-  border-left: 1px solid rgba(242, 196, 92, 0.3);
+  width: var(--tdm-score-w);
+  height: 100%;
+  background: var(--team);
+  /* The seam: the coloured end leans away from the dark half, so the join is a
+     diagonal rather than a butt joint. The outer corners stay round because the
+     card above clips them. */
+  clip-path: polygon(0 0, calc(100% - var(--tdm-cut)) 0, 100% 100%, 0 100%);
+  font: 700 2.2rem / 1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: 0.01em;
+  color: #fff;
+  text-shadow: 0 2px 7px rgba(0, 0, 0, 0.4);
 }
 
-.sb-alive-label {
-  color: var(--amber);
-  font-size: 0.5rem;
-  letter-spacing: 0.22em;
+.tdm-red .tdm-score {
+  clip-path: polygon(var(--tdm-cut) 0, 100% 0, 100% 100%, 0 100%);
 }
 
-.sb-alive {
-  font: 700 1.5rem / 1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+/* The team name, in the dark half of the same card. */
+.tdm-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 12px;
+  font: 700 1.1rem / 1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: 0.13em;
+  color: #fff;
+  white-space: nowrap;
+  text-align: center;
+}
+
+/* The thin coloured line under the dark half of each card - the name section,
+   not the score. Rounded at the end that runs out into the dark. */
+.tdm-accent {
+  position: absolute;
+  z-index: 2;
+  bottom: 0;
+  height: 3px;
+  background: var(--team);
+}
+
+.tdm-blue .tdm-accent {
+  left: var(--tdm-score-w);
+  right: 0;
+  border-radius: 0 3px 3px 0;
+}
+
+.tdm-red .tdm-accent {
+  left: 0;
+  right: var(--tdm-score-w);
+  border-radius: 3px 0 0 3px;
+}
+
+/* ---------------------------------------------------------------- the clock */
+/* A wedge, not a diamond and not a parallelogram. In a parallelogram both sides
+   lean the same way; here they lean opposite ways, so the panel is symmetric.
+   The longer edge is the one on top and the shorter one the bottom, so the sides
+   fall inward as they descend. All four corners are rounded, the wide top pair
+   more strongly, which is what gives that end its softer, curved feel.
+   The silhouette has to be an explicit path, because `border-radius` cannot
+   describe a taper and `clip-path: polygon()` cannot round a corner - so the
+   rounding is built into the path. The path is in pixels, so the clock is sized
+   in pixels to match it exactly. */
+.tdm-clock {
+  display: flex;
+  flex: 0 0 var(--tdm-clock-w);
+  align-items: center;
+  justify-content: center;
+  height: var(--tdm-clock-h);
+  background: var(--tdm-hud-deep);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12), 0 2px 8px rgba(0, 0, 0, 0.4);
+  clip-path: path("M4.2 10.2 Q0 0 11 0 L136 0 Q147 0 142.8 10.2 L127.3 48.4 Q125 54 119 54 L28 54 Q22 54 19.7 48.4 Z");
+}
+
+.tdm-time {
+  font: 700 2.1rem / 1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
   letter-spacing: 0.03em;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
 }
 
-.sb-alive.is-bumped {
-  animation: sb-bump 0.55s ease;
+/* Brief highlight whenever a score changes. */
+.tdm-score.is-bumped {
+  animation: tdm-bump 0.5s ease;
+}
+
+@keyframes tdm-bump {
+  0% {
+    filter: brightness(1.5);
+  }
+  100% {
+    filter: brightness(1);
+  }
 }
 
 .hud-top-left {
   position: absolute;
+  z-index: 2;
   top: 28px;
   left: 31px;
   width: 225px;
@@ -830,25 +860,21 @@ button {
 .weapon-icon {
   transition: all 0.2s ease;
   opacity: 0.35;
+  /* Default sizes live here so every slot is sized even if one is added
+     without a rule of its own. Override per slot to tweak a single weapon. */
+  --icon-h: 38px;
+  --icon-h-active: 64px;
 }
 
 .weapon-icon img {
   width: auto;
+  height: var(--icon-h);
   transition: all 0.2s ease;
   display: block;
 }
 
-/* Inactive (Holstered) Sizing */
-#weapon-outline-0 img {
-  height: 38px; /* Assault Rifle */
-}
-
-#weapon-outline-1 img {
-  height: 24px; /* Pistol - slightly smaller */
-}
-
-#weapon-outline-2 img {
-  height: 38px; /* AR-15 */
+.weapon-icon.active img {
+  height: var(--icon-h-active);
 }
 
 .weapon-icon.active {
@@ -857,21 +883,15 @@ button {
   opacity: 1;
 }
 
-/* Active (Selected) Sizing */
-#weapon-outline-0.active img {
-  height: 64px;
-}
-
-#weapon-outline-1.active img {
-  height: 38px;
-}
-
-#weapon-outline-2.active img {
-  height: 64px;
+/* The pistol is the only short weapon, so it is the only one sized down. */
+#weapon-outline-1 img {
+  height: 24px;
+  --icon-h-active: 38px;
 }
 
 .hud-top-center {
   position: absolute;
+  z-index: 2;
   top: 24px;
   left: 50%;
   display: flex;
@@ -939,6 +959,7 @@ button {
 
 .hud-bottom-left {
   position: absolute;
+  z-index: 2;
   bottom: 30px;
   left: 31px;
 }
@@ -956,8 +977,103 @@ button {
   letter-spacing: 0.16em;
 }
 
+/* Only mounted on a scoped weapon, and only while it is aimed - see
+   UIManager.setScopeReadout. Hidden by default, so the element costs nothing
+   for the three guns without an optic. */
+.scope-readout {
+  margin-top: 6px;
+  color: var(--amber);
+  font-size: 0.62rem;
+  letter-spacing: 0.18em;
+}
+
+.scope-readout[hidden] {
+  display: none;
+}
+
+/* The scoped view.
+   The eye ends up physically INSIDE the scope tube - the tube's rear end sits
+   about 0.2 units behind the camera at full ADS - so there is no camera
+   position that renders a usable 3D scope. Drawing it just wraps the inner
+   wall around the viewfinder. This is the screen-space scope every FPS uses
+   instead: a black surround with a circular aperture and a reticle. The
+   viewmodel is hidden while this is up, see WeaponSystem.update. */
+.scope-mask {
+  /* Radius of the clear circle. Every part of the scope derives from this one
+     value - the mask's gradient stop, the glass rim's width and height, and both
+     arms of the reticle - so widening it enlarges the whole optic together
+     instead of stretching the circle and leaving the crosshair behind. */
+  --scope-aperture: 39vmin;
+  position: absolute;
+  inset: 0;
+  /* Sits above the un-raised HUD layers and below the ones that carry live
+     information. The corner readouts, the hit marker and the kill feed are all
+     explicitly z-index 2, so a scoped player can still see their ammo, their
+     health, and whether a shot landed - the mask only swallows the world. */
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(circle at 50% 50%,
+      transparent 0 var(--scope-aperture),
+      #04060a calc(var(--scope-aperture) + 1px) 100%);
+}
+
+/* The glass rim: a hard edge plus an inner shadow, so the aperture reads as a
+   tube opening rather than a flat sticker. */
+.scope-mask-ring {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--scope-aperture) * 2);
+  height: calc(var(--scope-aperture) * 2);
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.85);
+  box-shadow:
+    0 0 0 1px rgba(150, 175, 180, 0.22),
+    inset 0 0 3.5vmin rgba(0, 0, 0, 0.9);
+}
+
+.scope-reticle {
+  position: absolute;
+  inset: 0;
+}
+
+.scope-reticle i {
+  position: absolute;
+  background: rgba(8, 10, 12, 0.88);
+  /* A pale halo so the reticle stays readable over a bright wall. */
+  box-shadow: 0 0 0 1px rgba(225, 240, 240, 0.28);
+}
+
+.sr-v {
+  left: 50%;
+  top: 50%;
+  width: 1px;
+  height: calc(var(--scope-aperture) * 1.5);
+  transform: translate(-50%, -50%);
+}
+
+.sr-h {
+  left: 50%;
+  top: 50%;
+  height: 1px;
+  width: calc(var(--scope-aperture) * 1.5);
+  transform: translate(-50%, -50%);
+}
+
+.sr-dot {
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
 .hud-bottom-right {
   position: absolute;
+  z-index: 2;
   right: 31px;
   bottom: 28px;
   min-width: 190px;
@@ -1018,6 +1134,14 @@ button {
 
 .hud.aim-mode .crosshair {
   opacity: 0;
+}
+
+/* A scoped weapon's crosshair is faded out by JS off the same raise as the
+   scope mask, so the CSS transition would fight it and leave a ghost crosshair
+   over the scope view for up to 120ms. Only the scoped path is affected; every
+   other weapon still uses .aim-mode plus the transition above. */
+.hud.scope-mode .crosshair {
+  transition: none;
 }
 
 .crosshair i {
@@ -1100,6 +1224,7 @@ button {
 
 .hit-marker {
   position: absolute;
+  z-index: 2;
   top: 50%;
   left: 50%;
   width: 28px;
@@ -1131,6 +1256,7 @@ button {
 /* Solo death cam: a centred countdown while the camera watches the killer. */
 .duel-banner {
   position: absolute;
+  z-index: 2;
   top: 50%;
   left: 50%;
   display: none;
@@ -1160,6 +1286,7 @@ button {
 
 .kill-feed {
   position: absolute;
+  z-index: 2;
   top: 105px;
   right: 30px;
   display: grid;
@@ -1203,6 +1330,7 @@ button {
 
 .reload-prompt {
   position: absolute;
+  z-index: 2;
   top: calc(50% + 37px);
   left: 50%;
   display: flex;
@@ -1351,21 +1479,46 @@ button {
     top: 14px;
   }
 
+  /* The clock's clip-path is in pixels, so the compact size needs its own path
+     rather than a scaled version of the one above. */
   .scoreboard {
-    width: min(560px, 84vw);
+    --tdm-radius: 7px;
+    --tdm-cut: 11px;
+    --tdm-team-h: 34px;
+    --tdm-clock-h: 42px;
+    --tdm-score-w: 50px;
+    --tdm-clock-w: 111px;
+    --tdm-clock-inset: 15px;
+    top: 10px;
+    width: min(500px, 84vw);
+  }
+
+  /* The same wedge as the default size, re-cut for the smaller box: a path is in
+     absolute pixels and does not rescale with the element. */
+  .tdm-clock {
+    clip-path: path("M2.7 7.5 Q0 0 8 0 L103 0 Q111 0 108.3 7.5 L97.7 37.3 Q96 42 91 42 L20 42 Q15 42 13.3 37.3 Z");
   }
 
   .hud.has-scoreboard .hud-top-left {
-    top: 54px;
+    top: 66px;
   }
 
-  .sb-side {
-    padding: 4px 10px 5px;
+  .tdm-score {
+    font-size: 1.55rem;
   }
 
-  .sb-center {
-    min-width: 62px;
-    padding: 4px 9px 5px;
+  .tdm-name {
+    padding: 0 8px;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+  }
+
+  .tdm-accent {
+    height: 2px;
+  }
+
+  .tdm-time {
+    font-size: 1.5rem;
   }
 
   .controls-grid {

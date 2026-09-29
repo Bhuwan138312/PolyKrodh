@@ -65,6 +65,7 @@ export class InputManager {
     if (event.code === 'Digit1' && !event.repeat) this.onDigit1?.();
     if (event.code === 'Digit2' && !event.repeat) this.onDigit2?.();
     if (event.code === 'Digit3' && !event.repeat) this.onDigit3?.();
+    if (event.code === 'Digit4' && !event.repeat) this.onDigit4?.();
     if (event.code === 'KeyE' && !event.repeat) this.onKeyE?.();
     if (event.code === 'KeyQ' && !event.repeat) this.onKeyQ?.();
   }

@@ -15,6 +15,30 @@ const ESCAPE_OFFSETS = [
 const DESCEND_TOLERANCE = -0.04;
 const ASCEND_TOLERANCE = 0.02;
 
+/**
+ * Rate at which the camera chases the aim FOV.
+ *
+ * This is only here to absorb a *change* in the aim FOV that does not come from
+ * the raise itself - scrolling the scope to another magnification while already
+ * aimed, which otherwise snaps. The raise drives the FOV directly, so a tighter
+ * value costs almost nothing: at 45 the lag is 22ms, under one and a half frames
+ * at 60fps, and a magnification change eases over ~70ms instead of stepping.
+ */
+const FOV_RESPONSE = 45;
+
+/**
+ * Ease-out for the ADS raise: `1 - (1 - t)^2`.
+ *
+ * Starts at 2x the average rate, which is what makes the raise feel immediate,
+ * and reaches zero velocity at the end, so the gun settles into place instead
+ * of arriving and then creeping. The 2x peak is a deliberate ceiling: the zoom's
+ * peak rate is the FOV travel times this slope over `transition`, and a 4x scope
+ * covers 67.5 degrees, so every extra unit of initial slope is paid for
+ * directly in zoom speed. A cubic would reach 95% four milliseconds sooner but
+ * push the zoom to 824 degrees per second against 549 here.
+ */
+const easeOutAds = (t) => 1 - (1 - t) * (1 - t);
+
 export class PlayerController {
   constructor({ scene, camera, input, arena, audio }) {
     this.scene = scene;
@@ -47,6 +71,13 @@ export class PlayerController {
     this.forceNoAds = false;
     this.adsTarget = 0;
     this.adsActive = false;
+    // Bookkeeping for the fixed-length raise in updateAimState. `adsFrom` is
+    // the value the current move started from and `adsPhase` how much of
+    // `ads.transition` has elapsed; `adsDirection` is the target the current
+    // move is heading for, and a change to it is what re-bases the move.
+    this.adsFrom = 0;
+    this.adsPhase = 0;
+    this.adsDirection = 0;
     this.damageFlash = 0;
     this.lastDamageDirection = 0;
     // Whoever landed the most recent damaging shot, so the solo death cam can
@@ -77,7 +108,7 @@ export class PlayerController {
     this.root.rotation.set(0, 0, 0);
     this.camera.position.set(0, this.config.eyeHeight, 0);
     this.camera.rotation.set(0, 0, 0);
-    this.camera.fov = 90;
+    this.camera.fov = this.config.baseFov;
     this.camera.updateProjectionMatrix();
     this.velocity.set(0, 0, 0);
     this.weaponSway.set(0, 0);
@@ -90,6 +121,9 @@ export class PlayerController {
     this.damageFlash = 0;
     this.bobDistance = 0;
     this.adsAmount = 0;
+    this.adsFrom = 0;
+    this.adsPhase = 0;
+    this.adsDirection = 0;
     this.adsTarget = 0;
     this.adsActive = false;
     this.grounded = true;
@@ -97,10 +131,26 @@ export class PlayerController {
     this.weapon?.reset();
   }
 
+  /**
+   * The field of view at full aim. A scoped weapon supplies its own - the hip
+   * FOV divided by its magnification - and everything else shares the flat
+   * `ads.fov`. Read per frame, because the scope's magnification changes on
+   * the scroll wheel.
+   */
+  getAimFov() {
+    return this.weapon?.getAdsFov?.() ?? this.config.ads.fov;
+  }
+
   look(deltaX, deltaY) {
     this.weaponSway.x += deltaX;
     this.weaponSway.y += deltaY;
-    const sensitivity = 0.00205 * THREE.MathUtils.lerp(1, this.config.ads.lookMultiplier, this.adsAmount);
+    // Zoomed in, the view covers a much smaller slice of the world, so the same
+    // mouse movement has to travel proportionally further to sweep across it.
+    // Scaling by the FOV ratio keeps the on-screen turn rate identical at every
+    // magnification; without it a 6x scope is close to unusable and the feel
+    // would change every time the wheel moved the zoom.
+    const fovScale = this.getAimFov() / this.config.ads.fov;
+    const sensitivity = 0.00205 * THREE.MathUtils.lerp(1, this.config.ads.lookMultiplier * fovScale, this.adsAmount);
     this.yaw -= deltaX * sensitivity;
     this.pitch -= deltaY * sensitivity;
     this.pitch = THREE.MathUtils.clamp(this.pitch, -1.47, 1.47);
@@ -117,12 +167,38 @@ export class PlayerController {
     this.shake = Math.min(1.4, this.shake + amount * adsScale);
   }
 
+  /**
+   * Drives the ADS raise, and releases it.
+   *
+   * The old code was a running average: `adsAmount` chased the target with a
+   * per-frame response factor and therefore never actually reached it. Two
+   * things went wrong with that on a scope. The asymptote is a tail - the gun
+   * was still visibly moving a fifth of a second after it looked like it had
+   * arrived. And the response had to be stretched for the sniper to hide the FOV
+   * pump, which stretched the whole raise to 330ms and read as sluggish.
+   *
+   * Instead this is a fixed-length move: `adsFrom` is the value the raise
+   * started from, `adsPhase` is how far through `transition` it is, and the
+   * amount is the eased blend of the two. That is finite by construction, so
+   * the raise cannot overrun however large the FOV travel, and reversing
+   * re-bases from wherever the gun currently is - which is what keeps mashing
+   * right-click from banking up an offset or sticking part way.
+   */
   updateAimState(delta) {
     this.adsTarget = this.input.ads ? 1 : 0;
     // Override: force hip fire during reload etc.
     if (this.forceNoAds) this.adsTarget = 0;
-    const response = 1 - Math.exp(-delta / (this.config.ads.transition * 0.32));
-    this.adsAmount = THREE.MathUtils.lerp(this.adsAmount, this.adsTarget, response);
+
+    // Reversing restarts the clock from the current position rather than from
+    // whichever end it was heading for, so the return is as quick as the raise
+    // and starts at the speed the raise had reached.
+    if (this.adsTarget !== this.adsDirection) {
+      this.adsDirection = this.adsTarget;
+      this.adsFrom = this.adsAmount;
+      this.adsPhase = 0;
+    }
+    this.adsPhase = Math.min(this.config.ads.transition, this.adsPhase + delta);
+    this.adsAmount = this.adsFrom + (this.adsTarget - this.adsFrom) * easeOutAds(this.adsPhase / this.config.ads.transition);
     this.adsActive = this.adsAmount > 0.5;
   }
 
@@ -281,10 +357,14 @@ export class PlayerController {
       'YXZ',
     );
 
-    // Constant 90 FOV base, no zoom out on sprint
-    const baseFov = 90;
-    const targetFov = THREE.MathUtils.lerp(baseFov, this.config.ads.fov, this.adsAmount);
-    this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, 1 - Math.exp(-14 * delta));
+    // Constant hip-fire FOV base, no zoom out on sprint.
+    const baseFov = this.config.baseFov;
+    const targetFov = THREE.MathUtils.lerp(baseFov, this.getAimFov(), this.adsAmount);
+    // `adsAmount` is already an eased 0-to-1 over the raise, so reading the FOV
+    // off it is what keeps the zoom welded to the barrel: the two cannot drift
+    // apart because there is only one curve. The chase below is now only there
+    // to smooth a magnification change, which arrives as a step in the target.
+    this.camera.fov = THREE.MathUtils.lerp(this.camera.fov, targetFov, 1 - Math.exp(-FOV_RESPONSE * delta));
     this.camera.updateProjectionMatrix();
   }
 

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GAME_CONFIG } from '../config.js';
 
 export class UIManager {
   constructor({ audio, weaponConfig }) {
@@ -35,12 +36,15 @@ export class UIManager {
     this.weaponOutlines = [
       document.querySelector('#weapon-outline-0'),
       document.querySelector('#weapon-outline-1'),
-      document.querySelector('#weapon-outline-2')
+      document.querySelector('#weapon-outline-2'),
+      document.querySelector('#weapon-outline-3')
     ];
     this.killFeed = document.querySelector('#kill-feed');
     this.duelBanner = document.querySelector('#duel-banner');
     this.captureHint = document.querySelector('#capture-hint');
     this.moveState = document.querySelector('#move-state');
+    this.scopeReadout = document.querySelector('#scope-readout');
+    this.scopeMask = document.querySelector('#scope-mask');
     this.sensitivity = document.querySelector('#sensitivity');
     this.sensitivityValue = document.querySelector('#sensitivity-value');
     this.controlsOverlay = document.querySelector('#controls-overlay');
@@ -411,15 +415,76 @@ export class UIManager {
     if (this.moveState.textContent !== state) this.moveState.textContent = state;
   }
 
+  /**
+   * Shows what magnification the scope is set to, but only for a scoped weapon
+   * and only while it is actually aimed. Called every frame, so it writes only
+   * when something really changed - the text and the hidden flag are both
+   * compared before touching the DOM, which keeps this off the hot path for
+   * the three guns that have no optic.
+   * `magnification` of 0 means the weapon has no scope at all.
+   */
+  setScopeReadout(magnification, scoped) {
+    if (!this.scopeReadout) return;
+    const text = magnification ? `${magnification}x` : '';
+    const visible = Boolean(text) && scoped;
+    if (this.scopeReadout.textContent !== text) this.scopeReadout.textContent = text;
+    if (this.scopeReadout.hidden !== !visible) this.scopeReadout.hidden = !visible;
+  }
+
+  /**
+   * Fades the screen-space scope in as a scoped weapon comes up to ADS.
+   *
+   * The sniper's eye ends up inside its own scope tube, so the 3D scope cannot
+   * be drawn at full aim - you would be looking at the inside of the wall. This
+   * overlay takes over instead, which is what a scope view actually is in every
+   * shooter.
+   *
+   * It runs over the same eased raise as the gun and the zoom, so all three
+   * arrive together, and it is deliberately NOT the whole raise: it stays
+   * completely off while the rifle comes up, so that first beat is a normal
+   * weapon raise you can actually see, and only then closes to full black.
+   * Closing from the very first frame instead made the ADS read as a cut.
+   * It reaches solid at `maskFull`, before WeaponSystem drops the viewmodel, so
+   * the rifle is already behind black when it goes.
+   */
+  setScopeOverlay(scoped, amount) {
+    if (!this.scopeMask) return;
+    const { maskStart, maskFull } = GAME_CONFIG.player.ads.scopeOverlay;
+    const span = Math.max(maskFull - maskStart, 1e-3);
+    const fade = scoped ? THREE.MathUtils.clamp((amount - maskStart) / span, 0, 1) : 0;
+    const on = fade > 0.001;
+    if (this.scopeMask.hidden !== !on) this.scopeMask.hidden = !on;
+    this.scopeMask.style.opacity = fade.toFixed(3);
+
+    // The reticle is a child of the mask, so it fades in with it. The crosshair
+    // has to be gone before that starts or the two are drawn on top of each
+    // other, and its own 120ms CSS transition is far too slow to guarantee that
+    // once the scope opens late in the raise - it would still be fading at
+    // 153ms while the mask went solid at 83ms. So for a scoped weapon the
+    // crosshair is driven from the same clock as the mask, fading out over the
+    // raise itself and reaching zero exactly at `maskStart`, and its CSS
+    // transition is switched off so there is only one thing setting its opacity.
+    // Unscoped weapons keep the class-and-transition path in setADS, untouched.
+    this.hud.classList.toggle('scope-mode', scoped);
+    if (scoped) this.crosshair.style.opacity = (1 - Math.min(1, amount / maskStart)).toFixed(3);
+    else this.crosshair.style.opacity = '';
+  }
+
   setSpread(spread) {
     const { base, scale } = this.crosshairSpread;
     const pixels = base + spread * scale;
     this.crosshair.style.setProperty('--cross-gap', `${pixels.toFixed(1)}px`);
   }
 
-  setADS(amount) {
+  setADS(amount, scoped = false) {
     const ads = THREE.MathUtils.clamp(amount, 0, 1);
-    this.hud.classList.toggle('aim-mode', ads > 0.45);
+    // A scoped weapon does not use this path at all: its crosshair is driven
+    // from setScopeOverlay, on the same clock as the mask, so that the crosshair
+    // and the scope reticle never share the screen. Skipping the class here also
+    // stops a stale `aim-mode` from a previously held unscoped weapon fighting
+    // the inline opacity - setScopeOverlay clears it for scoped weapons.
+    if (!scoped) this.hud.classList.toggle('aim-mode', ads > 0.45);
+    else this.hud.classList.remove('aim-mode');
   }
 
   setDamageFlash(amount) {
@@ -498,6 +563,11 @@ export class UIManager {
     this.damageVignette.style.opacity = '0';
     this.captureHint.classList.add('is-hidden');
     this.setADS(0);
+    // The scope overlay and its readout are driven per frame, so they have to
+    // be torn down explicitly - otherwise pausing or ending a match while aimed
+    // would leave a black scope stuck over the menu.
+    this.setScopeOverlay(false, 0);
+    this.setScopeReadout(0, false);
   }
 
   showEnd(won, kills, total, health) {

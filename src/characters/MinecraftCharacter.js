@@ -305,6 +305,39 @@ export function getBotSkin(typeKey) {
   return BOT_SKIN_CACHE.get(typeKey);
 }
 
+/**
+ * Swaps a bot type's procedural skin for a real 64x64 skin file, and resolves
+ * once it is in the cache. Called before the first match so `getBotSkin` hands
+ * the loaded texture back without any change at the spawn site.
+ *
+ * The image goes through the same canvas -> texture path the procedural skins
+ * use, so `flipY`, the nearest-neighbour filtering and the colour space stay
+ * identical and the UV rewrite never has to know where the pixels came from.
+ *
+ * The whole 64x64 sheet is copied rather than just a head region: on a standard
+ * skin the hat and jacket overlays are part of the same texture, and dropping
+ * them would leave the character wearing an empty second layer.
+ */
+export function loadBotSkin(typeKey, url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = SKIN_WIDTH;
+      canvas.height = SKIN_HEIGHT;
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, SKIN_WIDTH, SKIN_HEIGHT);
+      ctx.drawImage(image, 0, 0, SKIN_WIDTH, SKIN_HEIGHT, 0, 0, SKIN_WIDTH, SKIN_HEIGHT);
+      const skin = { texture: canvasToTexture(canvas), imageData: readCanvasImageData(canvas) };
+      BOT_SKIN_CACHE.set(typeKey, skin);
+      resolve(skin);
+    };
+    image.onerror = () => reject(new Error(`Bot skin failed to load: ${url}`));
+    image.src = url;
+  });
+}
+
 /* ------------------------------------------------------------------ *
  * Character assembly
  * ------------------------------------------------------------------ */
@@ -341,8 +374,13 @@ function resolveRects(key, imageData, layer) {
  * @param {THREE.Texture}  texture    The 64×64 skin texture.
  * @param {ImageData|null} imageData  Pixel data (same skin) for overlay
  *                                    detection and mirror fallback.
+ * @param {object|null}     heldWeapon A gun from HeldWeapons, swapped in for
+ *                                    the premade box rifle when supplied. The
+ *                                    group, and the hit meshes, are the same
+ *                                    either way - only what the character is
+ *                                    holding changes.
  */
-export function buildMinecraftCharacter({ texture, imageData = null }) {
+export function buildMinecraftCharacter({ texture, imageData = null, heldWeapon = null }) {
   const skinMaterial = new THREE.MeshStandardMaterial({
     map: texture,
     roughness: 0.85,
@@ -417,22 +455,50 @@ export function buildMinecraftCharacter({ texture, imageData = null }) {
     }
   }
 
-  // Simple rifle held in front of the chest.
+  // The gun is always a group, so the recoil kick and the weapon-swap logic
+  // have one thing to move whether it is the premade rifle or a real model.
   const gun = new THREE.Group();
   gun.name = 'BotGun';
-  gun.position.set(0.30, 1.02, -0.42);
-  const stock = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.16), gunMaterial);
-  stock.position.z = 0.26;
-  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.2, 0.44), gunMaterial);
-  const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.5), gunMaterial);
-  barrel.position.z = -0.4;
-  gun.add(stock, receiver, barrel);
+  // Recoil drives `position.z`; this is its home, and it is also where the
+  // premade rifle hangs, so swapping the contents does not move the hands.
+  const GUN_HOME = -0.42;
+  let gunMaterialForFlash = gunMaterial;
+  let ownedGunMaterials = [gunMaterial];
+  let gunMeshes;
+  // Where `gun.position.z` rests, so recoil can push off it. The premade rifle
+  // hangs its group at -0.42 with the boxes inside; a held model puts the grip
+  // anchor in a child group and leaves this one at zero, so both are pushed back
+  // by the same amount from their own home.
+  let gunHomeZ = GUN_HOME;
+
+  if (heldWeapon) {
+    // A real weapon model, already fitted and anchored to the fist. It brings
+    // its own group, positioned on the grip, so the anchor travels with the gun
+    // and recoil only ever moves this group.
+    gun.add(heldWeapon.group);
+    gunMaterialForFlash = heldWeapon.flashMaterial ?? gunMaterial;
+    ownedGunMaterials = heldWeapon.materials ?? [];
+    gunHomeZ = 0;
+    gunMeshes = [];
+    heldWeapon.group.traverse((child) => {
+      if (child.isMesh) gunMeshes.push(child);
+    });
+  } else {
+    gun.position.set(0.30, 1.02, GUN_HOME);
+    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.16), gunMaterial);
+    stock.position.z = 0.26;
+    const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.2, 0.44), gunMaterial);
+    const barrel = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, 0.5), gunMaterial);
+    barrel.position.z = -0.4;
+    gun.add(stock, receiver, barrel);
+    gunMeshes = [stock, receiver, barrel];
+  }
   group.add(gun);
-  hitMeshes.push(stock, receiver, barrel);
+  hitMeshes.push(...gunMeshes);
 
   const materials = overlayUsed
-    ? [skinMaterial, overlayMaterial, gunMaterial]
-    : [skinMaterial, gunMaterial];
+    ? [skinMaterial, overlayMaterial, ...ownedGunMaterials]
+    : [skinMaterial, ...ownedGunMaterials];
 
   return {
     group,
@@ -444,9 +510,10 @@ export function buildMinecraftCharacter({ texture, imageData = null }) {
     leftLeg: partMeshes.leftLeg.pivot,
     rightLeg: partMeshes.rightLeg.pivot,
     gun,
+    gunHomeZ,
     skinMaterial,
     overlayMaterial: overlayUsed ? overlayMaterial : null,
-    gunMaterial,
+    gunMaterial: gunMaterialForFlash,
     materials,
     hitMeshes,
   };

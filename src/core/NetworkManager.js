@@ -1,5 +1,13 @@
 import { io } from 'socket.io-client';
 import * as THREE from 'three';
+import { buildMinecraftCharacter, getBotSkin } from '../characters/MinecraftCharacter.js';
+import { createHeldWeapon, disposeHeldWeapon, HELD_WEAPONS } from '../characters/HeldWeapons.js';
+
+// Remote players wear the same blocky character the 1v1 duel opponent does.
+// 'pro' is the duel bot's type, so `getBotSkin('pro')` hands back the real skin
+// file Game.js loads at boot rather than a procedural one, and both read
+// identically.
+const REMOTE_SKIN = 'pro';
 
 export class NetworkManager {
   constructor(game) {
@@ -111,6 +119,12 @@ export class NetworkManager {
       this.game.scoreboard?.remove(id);
     });
 
+    // When someone switches weapon, so their character is holding the right gun
+    this.socket.on('playerWeaponChanged', (data) => {
+      if (!data || typeof data.id !== 'string') return;
+      this.setRemoteWeapon(data.id, data.weaponIndex);
+    });
+
     // When someone moves
     this.socket.on('playerMoved', (playerInfo) => {
       if (!playerInfo || typeof playerInfo.id !== 'string') return;
@@ -159,6 +173,11 @@ export class NetworkManager {
         // Draw the tracer
         const target = origin.clone().add(direction.clone().multiplyScalar(50));
         this.game.effects.tracer(origin, target, true);
+
+        // Kick the rifle they are holding, the same way the duel bot's own
+        // recoil drives its gun, so the shot is visible on the character and
+        // not just as a tracer across the world.
+        rp.recoilKick = Math.min(1, (rp.recoilKick ?? 0) + 0.55);
       }
     });
 
@@ -206,16 +225,7 @@ export class NetworkManager {
 
     // When someone respawns
     this.socket.on('playerRespawned', (playerInfo) => {
-      if (!playerInfo || typeof playerInfo.id !== 'string') return;
-      const rp = this.remotePlayers.get(playerInfo.id);
-      if (rp) {
-        // Authoritative revival. Snap them back in immediately so an alive
-        // player is never left hidden.
-        this.applyRemoteState(playerInfo.id, { health: 100, isAlive: true });
-        rp.mesh.position.set(playerInfo.x, playerInfo.y + 0.9, playerInfo.z);
-        rp.targetPosition.set(playerInfo.x, playerInfo.y, playerInfo.z);
-      }
-      this.game.scoreboard?.setDead(playerInfo.id, false);
+      this.respawnRemotePlayer(playerInfo);
     });
 
     // When we take damage from someone else
@@ -239,7 +249,15 @@ export class NetworkManager {
     const rp = this.remotePlayers.get(id);
     if (!rp) return null;
 
-    if (Number.isFinite(health)) rp.health = Math.max(0, health);
+    if (Number.isFinite(health)) {
+      const next = Math.max(0, health);
+      // A drop in the authoritative health means a round just landed, so this
+      // is where the character is told to flash. It is driven by the server's
+      // own numbers rather than by our shot landing, which is what keeps a
+      // whiffed shot from lighting the target up.
+      if (next < rp.health) rp.hitFlash = Math.min(1, rp.hitFlash + (rp.health - next) / 40 + 0.35);
+      rp.health = next;
+    }
     if (typeof isAlive === 'boolean') {
       // An explicit isAlive always wins, but it is cross-checked against the
       // health value so a contradictory packet cannot resurrect a corpse or
@@ -273,22 +291,45 @@ export class NetworkManager {
   addRemotePlayer(playerInfo) {
     if (this.remotePlayers.has(playerInfo.id)) return;
 
-    // Create a simple mesh to represent the remote player (Placeholder for now)
-    const material = new THREE.MeshStandardMaterial({ color: 0x438ce2, roughness: 0.8 });
-    const bodyGeometry = new THREE.CylinderGeometry(0.4, 0.4, 1.8, 16);
-    const bodyMesh = new THREE.Mesh(bodyGeometry, material);
-    bodyMesh.position.set(playerInfo.x, playerInfo.y + 0.9, playerInfo.z);
-    bodyMesh.castShadow = true;
-    bodyMesh.receiveShadow = true;
+    // The same blocky character the 1v1 duel opponent uses, and the same weapon
+    // the player has actually selected - the server tracks `weaponIndex`, so an
+    // opponent holding a pistol is holding a pistol, not the default rifle.
+    // `createHeldWeapon` returns null until that model is loaded, and the
+    // character keeps its premade rifle in that case.
+    const { texture, imageData } = getBotSkin(REMOTE_SKIN);
+    const weaponIndex = Number.isInteger(playerInfo.weaponIndex) ? playerInfo.weaponIndex : 0;
+    const heldWeapon = createHeldWeapon(weaponIndex);
+    const character = buildMinecraftCharacter({ texture, imageData, heldWeapon });
 
-    // Add a simple head/visor to show which way they are facing
-    const visorMaterial = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.1 });
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.2, 0.4), visorMaterial);
-    visor.position.set(0, 0.6, -0.3); // Forward is -Z in Three.js
-    bodyMesh.add(visor);
-    
-    // Add hitbox reference for raycasting
-    bodyMesh.userData = { isPlayer: true, id: playerInfo.id };
+    // The character's origin is at its feet, so the root takes the reported
+    // position as-is. The cylinder this replaced was modelled from its waist and
+    // needed the extra 0.9 that the old interpolation applied.
+    const bodyMesh = new THREE.Group();
+    bodyMesh.name = `RemotePlayer-${playerInfo.id}`;
+    bodyMesh.position.set(playerInfo.x, playerInfo.y, playerInfo.z);
+    bodyMesh.add(character.group);
+
+    // The parts a shot can land on, each tagged the way the projectile code
+    // expects. Body and gun are kept apart so a weapon swap can replace the
+    // gun's meshes without working out which of the current ones belong to the
+    // body. The head is marked explicitly rather than inferred from a height
+    // band, so headshots land on the head and nothing else.
+    const bodyHitMeshes = [];
+    const gunHitMeshes = [];
+    character.hitMeshes.forEach((mesh) => {
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      mesh.userData = {
+        isPlayer: true,
+        id: playerInfo.id,
+        head: mesh === character.head || mesh === character.headOverlay,
+      };
+      let onGun = false;
+      mesh.traverseAncestors((ancestor) => {
+        if (ancestor === character.gun) onGun = true;
+      });
+      (onGun ? gunHitMeshes : bodyHitMeshes).push(mesh);
+    });
 
     this.game.arena.root.add(bodyMesh);
 
@@ -297,9 +338,38 @@ export class NetworkManager {
       ? Boolean(playerInfo.isAlive)
       : !(playerInfo.dead === true || health <= 0);
 
+    // Everything that is not part of the gun belongs to the body and is this
+    // player's alone, so it is what gets freed on teardown.
+    const bodyMaterials = character.materials.filter(
+      (material) => !gunHitMeshes.some((mesh) => mesh.material === material),
+    );
+
     this.remotePlayers.set(playerInfo.id, {
       id: playerInfo.id,
       mesh: bodyMesh,
+      hitMeshes: [...bodyHitMeshes, ...gunHitMeshes],
+      bodyHitMeshes,
+      gunHitMeshes,
+      head: character.head,
+      headOverlay: character.headOverlay,
+      torso: character.torso,
+      leftArm: character.leftArm,
+      rightArm: character.rightArm,
+      leftLeg: character.leftLeg,
+      rightLeg: character.rightLeg,
+      gun: character.gun,
+      gunHomeZ: character.gunHomeZ,
+      heldWeapon,
+      weaponIndex,
+      skinMaterial: character.skinMaterial,
+      overlayMaterial: character.overlayMaterial,
+      gunMaterial: character.gunMaterial,
+      materials: character.materials,
+      bodyMaterials,
+      walkPhase: Math.random() * Math.PI * 2,
+      recoilKick: 0,
+      hitFlash: 0,
+      currentSpeed: 0,
       targetPosition: new THREE.Vector3(playerInfo.x, playerInfo.y, playerInfo.z),
       targetRotation: playerInfo.ry,
       health,
@@ -313,12 +383,92 @@ export class NetworkManager {
     console.log(`Added remote player ${playerInfo.id}`);
   }
 
+  /**
+   * Swaps the gun a remote character is holding, in place.
+   *
+   * The character is not rebuilt - only the contents of its gun group change.
+   * The skin, the limb animation and the body's hit meshes are untouched, and
+   * because the gun group is a stable node, recoil already in flight keeps
+   * driving whatever gun is now in it.
+   *
+   * A model that has not finished loading leaves the current gun in place rather
+   * than showing an empty hand.
+   */
+  setRemoteWeapon(id, weaponIndex) {
+    const rp = this.remotePlayers.get(id);
+    if (!rp) return;
+    if (!Number.isInteger(weaponIndex) || weaponIndex === rp.weaponIndex) return;
+    if (!HELD_WEAPONS[weaponIndex]) return;
+
+    const held = createHeldWeapon(weaponIndex);
+    if (!held) return;
+
+    this.attachRemoteGun(rp, held, weaponIndex);
+  }
+
+  /** Replaces a remote player's gun and retags the meshes that came with it. */
+  attachRemoteGun(rp, held, weaponIndex) {
+    // Release what the old gun owned, then empty the group it lived in.
+    disposeHeldWeapon(rp.heldWeapon);
+    while (rp.gun.children.length) rp.gun.remove(rp.gun.children[0]);
+
+    const gunMeshes = [];
+    held.group.traverse((child) => {
+      if (!child.isMesh) return;
+      child.userData = { isPlayer: true, id: rp.id, head: false };
+      gunMeshes.push(child);
+    });
+
+    rp.gun.add(held.group);
+    rp.heldWeapon = held;
+    rp.weaponIndex = weaponIndex;
+    // A held model carries its grip anchor in a child group, so this one rests
+    // at zero and recoil pushes off that.
+    rp.gunHomeZ = 0;
+    rp.gunMaterial = held.flashMaterial ?? rp.gunMaterial;
+    rp.materials = [...rp.bodyMaterials, ...(held.materials ?? [])];
+    rp.gunHitMeshes = gunMeshes;
+    rp.hitMeshes = [...rp.bodyHitMeshes, ...gunMeshes];
+  }
+
+  /**
+   * Puts a remote player back at their respawn point, alive and hit again.
+   *
+   * The character's origin is at its feet, so the reported position is applied
+   * directly. The cylinder this replaced was modelled from its waist and needed
+   * +0.9 here, which left the body standing half a metre off the floor.
+   */
+  respawnRemotePlayer(playerInfo) {
+    if (!playerInfo || typeof playerInfo.id !== 'string') return;
+    const rp = this.remotePlayers.get(playerInfo.id);
+    if (rp) {
+      // Authoritative revival. Snap them back in immediately so an alive
+      // player is never left hidden.
+      this.applyRemoteState(playerInfo.id, { health: 100, isAlive: true });
+      rp.mesh.position.set(playerInfo.x, playerInfo.y, playerInfo.z);
+      rp.targetPosition.set(playerInfo.x, playerInfo.y, playerInfo.z);
+    }
+    this.game.scoreboard?.setDead(playerInfo.id, false);
+  }
+
   removeRemotePlayer(id) {
     const rp = this.remotePlayers.get(id);
     if (rp) {
       this.game.arena.root.remove(rp.mesh);
-      rp.mesh.geometry.dispose();
-      rp.mesh.material.dispose();
+      // Only the body's own geometry. The weapon's geometry is shared with the
+      // cached prototype that every player of that gun clones from, so disposing
+      // it here would leave the gun broken for whoever joins next. The skin
+      // texture is shared the same way and is likewise left alone.
+      const gun = rp.gun;
+      rp.mesh.traverse((child) => {
+        if (!child.isMesh) return;
+        let onGun = false;
+        child.traverseAncestors((ancestor) => { if (ancestor === gun) onGun = true; });
+        if (!onGun) child.geometry.dispose();
+      });
+      // The gun's own per-player materials, which are this player's alone.
+      disposeHeldWeapon(rp.heldWeapon);
+      (rp.bodyMaterials ?? []).forEach((material) => material.dispose());
       this.remotePlayers.delete(id);
       console.log(`Removed remote player ${id}`);
     }
@@ -331,17 +481,56 @@ export class NetworkManager {
   }
 
   getHitMeshes() {
-    // Return all live remote player meshes for raycasting. Liveness comes from
-    // the same flag that drives rendering, so a shot can never be blocked by -
-    // or aimed at - a cylinder whose visibility disagrees with its health.
+    // Every live remote player's individual meshes, for raycasting. Liveness
+    // comes from the same flag that drives rendering, so a shot can never be
+    // blocked by - or aimed at - a body whose visibility disagrees with its
+    // health. Projectiles raycast non-recursively, so this has to hand back the
+    // body parts and the gun rather than the group that holds them.
     const meshes = [];
     this.remotePlayers.forEach(rp => {
       if (rp.isAlive && rp.health > this.DEATH_THRESHOLD) {
         rp.mesh.updateMatrixWorld(true);
-        meshes.push(rp.mesh);
+        meshes.push(...(rp.hitMeshes ?? [rp.mesh]));
       }
     });
     return meshes;
+  }
+
+  /**
+   * Walks and shoots a remote character, using the same motion the duel bot
+   * runs in EnemyAI.updateVisuals: leg swing scaled by speed, the right arm up
+   * on the rifle, recoil driving the gun back and the torso, and the skin
+   * flashing on a hit.
+   *
+   * Speed is derived from how far the interpolated root actually moved this
+   * frame, so the walk keeps time with the movement the player can see rather
+   * than with a timer that would drift against it.
+   */
+  animateRemotePlayer(rp, delta, travelled) {
+    if (!rp.leftLeg) return;
+    // Smoothed so a single dropped or late packet does not snap the legs.
+    const instantSpeed = delta > 0 ? travelled / delta : 0;
+    rp.currentSpeed += (instantSpeed - rp.currentSpeed) * Math.min(1, delta * 10);
+
+    const walk = Math.min(rp.currentSpeed / 3.5, 1);
+    rp.walkPhase += delta * (4.5 + rp.currentSpeed * 1.5);
+    const swing = Math.sin(rp.walkPhase) * 0.52 * walk;
+
+    rp.leftLeg.rotation.x = swing;
+    rp.rightLeg.rotation.x = -swing;
+    rp.leftArm.rotation.x = -0.08 - swing * 0.3;
+    rp.rightArm.rotation.x = 0.85 + swing * 0.12;
+    // Pushed back off the gun's own home, which is -0.42 for the premade rifle
+    // and 0 for a real model carrying its grip anchor in a child group.
+    rp.gun.position.z = rp.gunHomeZ + rp.recoilKick * 0.08;
+    rp.torso.rotation.x = rp.recoilKick * 0.08;
+    rp.recoilKick *= Math.exp(-10 * delta);
+    rp.hitFlash *= Math.exp(-7.5 * delta);
+
+    const flashAmount = Math.min(rp.hitFlash, 1);
+    rp.skinMaterial.emissiveIntensity = flashAmount * 0.9;
+    if (rp.overlayMaterial) rp.overlayMaterial.emissiveIntensity = flashAmount * 0.9;
+    rp.gunMaterial.emissiveIntensity = flashAmount * 0.55;
   }
 
   update(delta, time) {
@@ -366,20 +555,26 @@ export class NetworkManager {
     // 2. Smoothly interpolate remote players to their target positions
     this.remotePlayers.forEach(rp => {
       if (rp.dead) return;
-      
-      // Interpolate position (LERP)
-      rp.mesh.position.lerp(new THREE.Vector3(rp.targetPosition.x, rp.targetPosition.y + 0.9, rp.targetPosition.z), 15 * delta);
-      
+
+      // Interpolate position (LERP). The character's origin is at its feet, so
+      // this takes the reported position directly - no waist offset, which the
+      // cylinder this replaced needed.
+      const before = rp.mesh.position.distanceToSquared(rp.targetPosition);
+      rp.mesh.position.lerp(rp.targetPosition, 15 * delta);
+      const travelled = Math.sqrt(Math.max(0, before - rp.mesh.position.distanceToSquared(rp.targetPosition)));
+
       // Interpolate rotation smoothly
       const currentRot = rp.mesh.rotation.y;
       const targetRot = rp.targetRotation;
-      
+
       // Fix shortest path wrapping
       let diff = targetRot - currentRot;
       while (diff < -Math.PI) diff += Math.PI * 2;
       while (diff > Math.PI) diff -= Math.PI * 2;
-      
+
       rp.mesh.rotation.y += diff * 15 * delta;
+
+      this.animateRemotePlayer(rp, delta, travelled);
     });
 
     // 3. Reconcile visibility against the authoritative liveness every frame.
@@ -397,6 +592,16 @@ export class NetworkManager {
       this.lastStateSyncTime = time;
       this.socket.emit('requestPlayerState');
     }
+
+    // 5. Hand out real guns to anyone who joined before theirs finished
+    // downloading, or who picked one that had not arrived yet. The weapon index
+    // is already known, so this only has to keep asking until the model is
+    // there; a player already on a real gun has nothing to poll.
+    this.remotePlayers.forEach((rp) => {
+      if (rp.heldWeapon || !HELD_WEAPONS[rp.weaponIndex]) return;
+      const held = createHeldWeapon(rp.weaponIndex);
+      if (held) this.attachRemoteGun(rp, held, rp.weaponIndex);
+    });
   }
   
   sendShot(origin, direction) {
@@ -405,6 +610,15 @@ export class NetworkManager {
       origin: { x: origin.x, y: origin.y, z: origin.z },
       direction: { x: direction.x, y: direction.y, z: direction.z }
     });
+  }
+
+  /**
+   * Tells the room which weapon is in our hands, so everyone else can put that
+   * gun in our character's grip instead of leaving them holding the last one.
+   */
+  sendWeaponChanged(weaponIndex) {
+    if (!this.connected) return;
+    this.socket.emit('weaponChanged', weaponIndex);
   }
   
   sendHit(targetId, damage, headshot) {

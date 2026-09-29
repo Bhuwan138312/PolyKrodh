@@ -8,7 +8,13 @@ export class ShellEjectionSystem {
     this.shells = [];
     this.template = null;
     this.templateScale = new THREE.Vector3(1, 1, 1);
-    this.geometry = new THREE.CylinderGeometry(0.0035, 0.003, 0.0175, 10, 1, false);
+    // Reference rifle-casing proportions, in world metres. A .17 cartridge case
+    // is roughly 63 mm long and 12.7 mm across, and the guns that ship a named
+    // shell mesh eject at 0.021-0.050 m, so this sits with them instead of the
+    // 0.0175 m sliver this used to be - which was barely half as long as the
+    // rifle casings and read as a speck. A weapon whose casing is a different
+    // size scales it via `config.size` rather than editing this.
+    this.geometry = new THREE.CylinderGeometry(0.0062, 0.0055, 0.058, 10, 1, false);
     this.material = new THREE.MeshStandardMaterial({
       color: 0xc99a43,
       metalness: 0.82,
@@ -45,7 +51,7 @@ export class ShellEjectionSystem {
         Math.random() * Math.PI,
         Math.random() * Math.PI,
       );
-      shell.scale.setScalar(0.9 + Math.random() * 0.2);
+      shell.scale.setScalar((0.9 + Math.random() * 0.2) * (this.config.size ?? 1));
     }
     shell.traverse((child) => {
       child.frustumCulled = false;

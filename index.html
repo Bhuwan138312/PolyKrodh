@@ -19,15 +19,18 @@
       <div class="damage-vignette" id="damage-vignette"></div>
 
       <div id="scoreboard" class="scoreboard">
-        <div class="sb-side sb-left">
-          <div class="sb-rows" id="sb-rows-mine"></div>
+        <div class="tdm-team tdm-blue">
+          <div class="tdm-score" id="sb-score-blue">0</div>
+          <div class="tdm-name" id="sb-name-blue">TEAM 1</div>
+          <i class="tdm-accent" aria-hidden="true"></i>
         </div>
-        <div class="sb-center">
-          <span class="sb-alive-label">ALIVE</span>
-          <strong class="sb-alive" id="sb-alive">0</strong>
+        <div class="tdm-clock">
+          <span class="tdm-time" id="sb-clock">0:00</span>
         </div>
-        <div class="sb-side sb-right">
-          <div class="sb-rows" id="sb-rows-enemy"></div>
+        <div class="tdm-team tdm-red">
+          <div class="tdm-name" id="sb-name-red">TEAM 2</div>
+          <div class="tdm-score" id="sb-score-red">0</div>
+          <i class="tdm-accent" aria-hidden="true"></i>
         </div>
       </div>
 
@@ -49,6 +52,9 @@
           <div id="weapon-outline-2" class="weapon-icon">
             <img src="/pictures/assaultrifle-outline.png" alt="Shotgun">
           </div>
+          <div id="weapon-outline-3" class="weapon-icon">
+            <img src="/pictures/assaultrifle-outline.png" alt="Sniper">
+          </div>
         </div>
       </div>
 
@@ -64,6 +70,7 @@
       <div class="hud-bottom-left">
         <div id="weapon-name" class="weapon-name">M416</div>
         <div id="move-state" class="move-state">READY</div>
+        <div id="scope-readout" class="scope-readout" hidden>4x</div>
       </div>
 
       <div class="hud-bottom-right">
@@ -75,6 +82,10 @@
       <div id="crosshair" class="crosshair" aria-hidden="true">
         <i class="ch-top"></i><i class="ch-right"></i><i class="ch-bottom"></i><i class="ch-left"></i><i
           class="ch-dot"></i>
+      </div>
+      <div id="scope-mask" class="scope-mask" aria-hidden="true">
+        <div class="scope-mask-ring"></div>
+        <div class="scope-reticle"><i class="sr-v"></i><i class="sr-h"></i><i class="sr-dot"></i></div>
       </div>
       <div id="hit-marker" class="hit-marker" aria-hidden="true">
         <i></i><i></i><i></i><i></i>
@@ -91,6 +102,7 @@
           <div><kbd>Q</kbd><span>ALT VIEW</span></div>
           <div><kbd>1</kbd><kbd>2</kbd><span>WEAPON</span></div>
           <div><kbd>Right Click</kbd><span>AIM</span></div>
+          <div><kbd>Wheel</kbd><span>SCOPE / WEAPON</span></div>
           <div><kbd>H</kbd><span>TOGGLE THIS MENU</span></div>
         </div>
       </div>
@@ -114,13 +126,13 @@
         <div class="difficulty-block" style="margin-bottom: 20px;">
           <div class="section-label">SELECT MAP</div>
           <div class="krunker-map-grid" role="group" aria-label="Map" style="display: flex; gap: 12px; height: 120px;">
-            <button class="krunker-map-card active" data-map="arena" style="flex: 1; background: #1a1f26 url('/models/arena.jpg') center/cover no-repeat; position: relative; border: 2px solid #8abdf2; border-radius: 4px; overflow: hidden; cursor: pointer; transition: all 0.2s; padding: 0; outline: none; display: flex; align-items: flex-end;">
+            <button class="krunker-map-card active" data-map="arena" style="flex: 1; background: #1a1f26 url('/pictures/arena_preview.jpg') center/cover no-repeat; position: relative; border: 2px solid #8abdf2; border-radius: 4px; overflow: hidden; cursor: pointer; transition: all 0.2s; padding: 0; outline: none; display: flex; align-items: flex-end;">
               <div style="width: 100%; background: linear-gradient(to top, rgba(0,0,0,0.9), transparent); padding: 25px 10px 10px 10px; text-align: left; transition: background 0.2s;">
                 <div style="font-family: var(--font-header); font-size: 18px; color: #fff; line-height: 1;">MAIN ARENA</div>
                 <div style="font-family: var(--font-mono); font-size: 10px; color: var(--color-primary); letter-spacing: 1px; margin-top: 4px;">LARGE</div>
               </div>
             </button>
-            <button class="krunker-map-card" data-map="smallarena" style="flex: 1; background: #1a1f26 url('/models/smallarena.jpg') center/cover no-repeat; position: relative; border: 2px solid transparent; border-radius: 4px; overflow: hidden; cursor: pointer; transition: all 0.2s; padding: 0; outline: none; display: flex; align-items: flex-end;">
+            <button class="krunker-map-card" data-map="smallarena" style="flex: 1; background: #1a1f26 url('/pictures/smalltdm_preview.jpg') center/cover no-repeat; position: relative; border: 2px solid transparent; border-radius: 4px; overflow: hidden; cursor: pointer; transition: all 0.2s; padding: 0; outline: none; display: flex; align-items: flex-end;">
               <div style="width: 100%; background: linear-gradient(to top, rgba(0,0,0,0.9), transparent); padding: 25px 10px 10px 10px; text-align: left; transition: background 0.2s;">
                 <div style="font-family: var(--font-header); font-size: 18px; color: #fff; line-height: 1;">SMALL ARENA</div>
                 <div style="font-family: var(--font-mono); font-size: 10px; color: var(--color-primary); letter-spacing: 1px; margin-top: 4px;">COMPACT</div>

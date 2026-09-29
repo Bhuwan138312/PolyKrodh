@@ -1,42 +1,62 @@
 /**
- * Multiplayer kill/death scoreboard.
+ * Team deathmatch scoreboard.
  *
- * A full-width bar pinned to the top of the HUD, laid out like a
- * battle-royale team bar: you on the left, everyone else on the right, and a
- * live ALIVE counter in the middle.
+ * A thin bar at the top of the HUD reading left to right as
+ * [ BLUE 8 | TEAM 1 ]  [ 5:00 ]  [ TEAM 2 | RED 7 ].
  *
- * This module is purely presentational. It never derives state on its own -
- * it renders whatever the server last said via NetworkManager, so the bar can
- * only ever disagree with the authoritative score in the same way the rest of
- * the HUD does. It has no effect on health, death, or visibility.
+ * The sides are fixed and are never swapped: blue is always the player's own
+ * team and always sits on the left, red is always the opponents and always sits
+ * on the right. Nothing about who is winning, what a team is numbered, or how
+ * many players there are can move them.
+ *
+ * This module is purely presentational. It derives nothing about the match: the
+ * two scores are sums of the kills the server reported, and the clock is the
+ * time since this client's match began. It has no effect on health, death, or
+ * visibility, and it never decides who is alive.
+ *
+ * What "your team" means: a player the server labels with a `team` defines it,
+ * and the blue figure is the total for every player sharing that team - true
+ * team deathmatch. The server does not send one today, so with no team labels
+ * the bar falls back to the only split the data actually supports: you against
+ * everyone else. If the server ever starts sending `team`, this becomes real TDM
+ * with no change here.
  */
-const MAX_ROWS = 5;
-const MAX_NAME = 12;
+
+const TEAM_LABELS = Object.freeze({ 1: 'TEAM 1', 2: 'TEAM 2' });
 
 export class Scoreboard {
   constructor() {
     this.root = document.querySelector('#scoreboard');
     this.hud = document.querySelector('#hud');
-    this.mineEl = document.querySelector('#sb-rows-mine');
-    this.enemyEl = document.querySelector('#sb-rows-enemy');
-    this.aliveEl = document.querySelector('#sb-alive');
-    this.centerEl = this.aliveEl ? this.aliveEl.parentElement : null;
+    // Blue is on the left, red on the right. The ids are named by colour, not
+    // by position, because the positions are fixed and the colours are what
+    // could otherwise get confused.
+    this.blueScoreEl = document.querySelector('#sb-score-blue');
+    this.blueNameEl = document.querySelector('#sb-name-blue');
+    this.redScoreEl = document.querySelector('#sb-score-red');
+    this.redNameEl = document.querySelector('#sb-name-red');
+    this.clockEl = document.querySelector('#sb-clock');
 
-    this.players = new Map(); // id -> { id, kills, deaths, dead }
+    // id -> { id, kills, deaths, team }
+    this.players = new Map();
     this.myId = null;
-    this.rows = new Map();    // id -> { row, nameEl, killsEl, deathsEl, lastKills, lastDeaths }
-    this.lastAlive = null;
+    // Wall-clock start of the match, in ms. Null until the first snapshot.
+    this.startedAt = null;
+    this.lastClock = null;
   }
 
-  /** Clear all state and hide the bar (new match, left the room, match over). */
+  /**
+   * Clear all state and hide the bar (new match, left the room, match over).
+   * The clock is cleared too, so the next match starts from zero rather than
+   * inheriting the last one's elapsed time.
+   */
   reset() {
     this.players.clear();
-    this.rows.forEach(({ row }) => row.remove());
-    this.rows.clear();
     this.myId = null;
-    this.lastAlive = null;
-    if (this.aliveEl) this.aliveEl.textContent = '0';
+    this.startedAt = null;
+    this.lastClock = null;
     this.setActive(false);
+    this.paint(0, 0, 0);
   }
 
   setActive(on) {
@@ -44,11 +64,12 @@ export class Scoreboard {
   }
 
   /**
-   * Apply an authoritative snapshot of the room. Merged rather than replaced
-   * so a momentarily short payload can never make the bar flicker empty.
+   * Apply an authoritative snapshot of the room. Merged rather than replaced so
+   * a momentarily short payload can never make the bar flicker.
    */
   sync(players, myId) {
     if (myId) this.myId = myId;
+    if (this.startedAt === null && players && typeof players === 'object') this.startedAt = now();
     if (players && typeof players === 'object') {
       Object.keys(players).forEach((id) => {
         const info = players[id];
@@ -56,146 +77,140 @@ export class Scoreboard {
         const prev = this.players.get(id);
         this.players.set(id, {
           id,
-          name: typeof info.name === 'string' ? info.name.slice(0, MAX_NAME) : null,
           kills: toCount(info.kills),
           deaths: toCount(info.deaths),
-          // A snapshot without an explicit flag leaves the previous value alone.
-          dead: typeof info.dead === 'boolean' ? info.dead : (prev ? prev.dead : false),
+          // A server-sent team is always believed; anything else stays null and
+          // the side is decided by `sideOf` below.
+          team: normaliseTeam(info.team) ?? prev?.team ?? null,
         });
       });
     }
     this.render();
   }
 
-  /** Incremental liveness update, used by the death / respawn events. */
-  setDead(id, dead) {
-    if (typeof id !== 'string') return;
-    const prev = this.players.get(id);
-    if (!prev) return;
-    prev.dead = Boolean(dead);
-    this.render();
-  }
-
-  /** A player left the room - drop them from the board. */
+  /** A player left the room - drop them and re-read the two totals. */
   remove(id) {
     if (typeof id !== 'string') return;
     this.players.delete(id);
-    const row = this.rows.get(id);
-    if (row) {
-      row.row.remove();
-      this.rows.delete(id);
-    }
     this.render();
   }
 
-  /** Best players first; ties broken by fewest deaths. */
-  ranked() {
-    return [...this.players.values()].sort(
-      (a, b) => b.kills - a.kills || a.deaths - b.deaths || a.id.localeCompare(b.id)
-    );
+  /**
+   * Liveness is tracked but has no effect on the bar. It is kept so `setDead`
+   * stays a valid call site for the death and respawn events that fire it.
+   */
+  setDead(id, dead) {
+    const entry = this.players.get(id);
+    if (entry) entry.dead = Boolean(dead);
   }
 
-  displayName(entry) {
-    if (entry.id === this.myId) return 'YOU';
-    if (entry.name) return entry.name;
-    return shortTag(entry.id);
+  /**
+   * Which team the local player is on, or null when the server has not said.
+   * Null is not an error: it just means the bar falls back to you-versus-all.
+   */
+  myTeam() {
+    return this.myId ? this.players.get(this.myId)?.team ?? null : null;
+  }
+
+  /**
+   * The side an entry belongs to, from the player's point of view.
+   *
+   * With server teams this is a real team comparison. Without them there is only
+   * one fact to go on - who the local player is - so the player's own tally is
+   * blue and everyone else's is red.
+   */
+  sideOf(entry) {
+    const myTeam = this.myTeam();
+    if (myTeam === null) return entry.id === this.myId ? 'blue' : 'red';
+    return entry.team === myTeam ? 'blue' : 'red';
+  }
+
+  /** The two totals, blue first because blue is always the player's side. */
+  scores() {
+    let blue = 0;
+    let red = 0;
+    this.players.forEach((entry) => {
+      if (this.sideOf(entry) === 'blue') blue += entry.kills;
+      else red += entry.kills;
+    });
+    return { blue, red };
+  }
+
+  /**
+   * Which team each panel names.
+   *
+   * The left panel is always the player's team, so when the server does name
+   * teams the player's team number decides the wording - never the position,
+   * which stays fixed.
+   */
+  labels() {
+    const myTeam = this.myTeam();
+    if (myTeam === 1) return { left: TEAM_LABELS[1], right: TEAM_LABELS[2] };
+    if (myTeam === 2) return { left: TEAM_LABELS[2], right: TEAM_LABELS[1] };
+    return { left: TEAM_LABELS[1], right: TEAM_LABELS[2] };
   }
 
   render() {
-    const ranked = this.ranked();
-    const mine = ranked.filter((p) => p.id === this.myId);
-    const others = ranked.filter((p) => p.id !== this.myId);
-    const hidden = others.length - MAX_ROWS;
-
     // Only claim HUD real estate when there is genuinely a match to report.
-    this.setActive(ranked.length > 1);
-
-    this.paintColumn(mine, this.mineEl);
-    this.paintColumn(others.slice(0, MAX_ROWS), this.enemyEl);
-    if (hidden > 0) this.paintOverflow(this.enemyEl, hidden);
-    else this.enemyEl?.querySelector('.sb-more')?.remove();
-    this.dropStaleRows(ranked.slice(0, MAX_ROWS));
-
-    const alive = ranked.filter((p) => !p.dead).length;
-    if (this.aliveEl) this.aliveEl.textContent = String(alive);
-    if (alive !== this.lastAlive) {
-      this.lastAlive = alive;
-      bump(this.centerEl);
-    }
+    this.setActive(this.players.size > 0);
+    const { blue, red } = this.scores();
+    this.paint(blue, red, this.elapsed());
   }
 
-  paintColumn(entries, container) {
-    if (!container) return;
-    const keep = new Set(entries.map((e) => e.id));
-    container.querySelectorAll('.sb-entry').forEach((el) => {
-      if (!keep.has(el.dataset.id)) el.remove();
-    });
-    entries.forEach((entry, index) => {
-      const row = this.ensureRow(entry.id);
-      row.nameEl.textContent = this.displayName(entry);
-      row.row.classList.toggle('is-me', entry.id === this.myId);
-      row.row.classList.toggle('is-dead', entry.dead);
-      if (row.lastKills !== entry.kills) {
-        row.killsEl.textContent = String(entry.kills);
-        bump(row.killsEl);
-        row.lastKills = entry.kills;
-      }
-      if (row.lastDeaths !== entry.deaths) {
-        row.deathsEl.textContent = String(entry.deaths);
-        row.lastDeaths = entry.deaths;
-      }
-      // Keep DOM order in sync with the ranking.
-      if (container.children[index] !== row.row) {
-        container.insertBefore(row.row, container.children[index] || null);
-      }
-    });
+  paint(blue, red, seconds) {
+    setScore(this.blueScoreEl, blue);
+    setScore(this.redScoreEl, red);
+    const { left, right } = this.labels();
+    if (this.blueNameEl) this.blueNameEl.textContent = left;
+    if (this.redNameEl) this.redNameEl.textContent = right;
+    this.paintClock(seconds);
   }
 
-  paintOverflow(container, count) {
-    if (!container) return;
-    let more = container.querySelector('.sb-more');
-    if (!more) {
-      more = document.createElement('div');
-      // Deliberately not `.sb-entry`, so paintColumn's own pruning does not
-      // delete and recreate this every render.
-      more.className = 'sb-more';
-      container.appendChild(more);
-    }
-    more.textContent = `+${count} MORE`;
+  paintClock(seconds) {
+    if (!this.clockEl) return;
+    const text = formatClock(seconds);
+    // Once a second is the only resolution a match clock needs, so the DOM is
+    // left alone in between rather than rewritten 60 times a second.
+    if (text === this.lastClock) return;
+    this.lastClock = text;
+    this.clockEl.textContent = text;
   }
 
-  ensureRow(id) {
-    let entry = this.rows.get(id);
-    if (entry) return entry;
-
-    const row = document.createElement('div');
-    row.className = 'sb-entry';
-    row.dataset.id = id;
-
-    const kills = document.createElement('span');
-    kills.className = 'sb-kills';
-    const name = document.createElement('span');
-    name.className = 'sb-name';
-    const deaths = document.createElement('span');
-    deaths.className = 'sb-deaths';
-
-    // DOM order is always [name, deaths, kills]; CSS mirrors the right column.
-    row.append(name, deaths, kills);
-
-    entry = { row, nameEl: name, killsEl: kills, deathsEl: deaths, lastKills: null, lastDeaths: null };
-    this.rows.set(id, entry);
-    return entry;
+  /** Seconds since this client's match began. */
+  elapsed() {
+    if (this.startedAt === null) return 0;
+    return Math.max(0, (now() - this.startedAt) / 1000);
   }
 
-  dropStaleRows(keep) {
-    const ids = new Set(keep.map((e) => e.id));
-    this.rows.forEach((entry, id) => {
-      if (!ids.has(id)) {
-        entry.row.remove();
-        this.rows.delete(id);
-      }
-    });
+  /**
+   * Advances the clock. Called every frame; the DOM is only touched when the
+   * displayed second actually changes.
+   */
+  tick() {
+    if (this.startedAt === null) return;
+    if (!this.hud?.classList.contains('has-scoreboard')) return;
+    this.paintClock(this.elapsed());
   }
+}
+
+/** Writes a score, flashing it only when the number actually changes. */
+function setScore(el, value) {
+  if (!el) return;
+  const text = String(value);
+  if (el.textContent === text) return;
+  el.textContent = text;
+  bump(el);
+}
+
+/** Accepts 1/'blue'/2/'red' from the server; anything else is treated as unset. */
+function normaliseTeam(value) {
+  if (value === 1 || value === '1' || value === 'blue') return 1;
+  if (value === 2 || value === '2' || value === 'red') return 2;
+  return null;
+}
+
+function now() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
 function toCount(value) {
@@ -203,14 +218,14 @@ function toCount(value) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-/**
- * Fallback label for a player with no name. Socket ids are base64-ish and
- * routinely contain '-' and '_' (e.g. "l-R-SZw5Gse"), so strip the punctuation
- * before taking a tag - otherwise the bar reads "L-R-".
- */
-function shortTag(id) {
-  const clean = String(id).replace(/[^a-z0-9]/gi, '').toUpperCase();
-  return clean.slice(0, 4) || '????';
+/** Seconds as m:ss, the format the clock uses. Rolls over at an hour. */
+function formatClock(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(secs)}` : `${minutes}:${pad(secs)}`;
 }
 
 /** Re-trigger a one-shot CSS animation. */

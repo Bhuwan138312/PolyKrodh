@@ -14,7 +14,10 @@ const REFERENCE_DEFINITIONS = Object.freeze([
   // node name through PropertyBinding.sanitizeNodeName, so a model authored as
   // "shell insert point" reaches us as "shell_insert_point".
   { key: 'shellInsertPoint', expected: 'ShellInsertPoint', candidates: ['ShellInsertPoint', 'shell_insert_point', 'shellinsertpoint', 'ShellInsertionPoint', 'shell_insertion_point', 'shell_load_point', 'shell insert point', 'shellinsertpoint', 'ShellInsertionPoint', 'shell insertion point', 'shellloadpoint', 'ShellLoadPoint'] },
-  { key: 'bolt', expected: 'Bolt', candidates: ['Bolt', 'bolt', 'Cock', 'cock', 'slide', 'Slide', 'uar15 bolt'] },
+  // `charging_bolt` is the bolt-action sniper's own handle node. It is a real
+  // mesh on that model, so binding it here is what gives the gun its long lift
+  // and drop after every shot instead of a rifle-style straight-back pull.
+  { key: 'bolt', expected: 'Bolt', candidates: ['Bolt', 'bolt', 'Cock', 'cock', 'slide', 'Slide', 'uar15 bolt', 'charging_bolt', 'Charging_Bolt', 'charging bolt', 'chargingbolt'] },
   { key: 'chargingHandle', expected: 'ChargingHandle', candidates: ['Charging_Handle', 'Charginghandle', 'charginghandle', 'charging_handle', 'charging handle'] },
   { key: 'trigger', expected: 'Trigger', candidates: ['Trigger', 'trigger', 'm1014_trigga', 'm1014 trigga', 'Trigga'] },
   {
@@ -25,18 +28,95 @@ const REFERENCE_DEFINITIONS = Object.freeze([
   { key: 'scope', expected: 'Scope', candidates: ['Scope', 'Scope_mount', 'ddmk18_iron_sight_18'] },
   { key: 'scopeGlass', expected: 'ScopeGlass', candidates: ['ScopeGlass', 'scope_gglass'] },
   { key: 'redDot', expected: 'RedDot', candidates: ['RedDot', 'red_dot'] },
-  { key: 'adsAim', expected: 'ADSAim', candidates: ['ADSAim', 'adsaimpoint'] },
+  // `adspoint` is how the sniper model names its sight picture. Without it the
+  // rifle and pistol fall back to their own points and this gun would snap the
+  // viewmodel somewhere arbitrary when the player aims down the scope.
+  { key: 'adsAim', expected: 'ADSAim', candidates: ['ADSAim', 'adsaimpoint', 'adspoint', 'AdsPoint', 'ads point', 'Ads_Point'] },
   { key: 'aimPoint', expected: 'AimPoint', candidates: ['AimPoint', 'aimpoint'] },
   { key: 'bulletTemplate', expected: 'Bullet', candidates: ['Bullet', 'BulletTemplate'] },
-  { key: 'shellTemplate', expected: 'Shell', candidates: ['Shell', 'ShellTemplate', 'Bulletshell', 'BulletShell', 'Object_11'] },
+  // A generic mesh name like `Object_11` must never be listed as a shell
+  // fallback. It is a collision waiting to happen: on sniper.glb `Object_11` is
+  // a 0.31-long slab of the receiver, not a casing. Binding it here made that
+  // slab the eject template AND hid it via configureHiddenTemplates, so every
+  // shot threw a tumbling piece of rifle and a chunk of the gun vanished. Each
+  // of the other three guns ships a properly named shell, so a model with no
+  // match is now left unresolved and falls back to the procedural brass casing.
+  { key: 'shellTemplate', expected: 'Shell', candidates: ['Shell', 'ShellTemplate', 'Bulletshell', 'BulletShell'] },
   /**
    * The shell that is actually loaded in the gun. Unlike `shellTemplate` this
    * one stays visible in the model (on the shotgun it is the round sitting in
    * the tube), so it is reused for the eject and the reload-insert animation
    * instead of being hidden away.
    */
-  { key: 'shellModel', expected: 'Shell', candidates: ['Shell', 'ShellTemplate', 'Bulletshell', 'BulletShell', 'Object_11', 'bulletcell', 'shellcell', 'Shells'] },
+  { key: 'shellModel', expected: 'Shell', candidates: ['Shell', 'ShellTemplate', 'Bulletshell', 'BulletShell', 'bulletcell', 'shellcell', 'Shells'] },
 ]);
+
+/**
+ * Finds one named node, trying the expected name, then its known aliases, then a
+ * case- and separator-insensitive match. The last pass is what catches a model
+ * authored as "shell insert point" arriving as "shell_insert_point", because
+ * GLTFLoader runs every node name through PropertyBinding.sanitizeNodeName.
+ */
+function resolveReferenceIn(asset, definition) {
+  const expected = asset.getObjectByName(definition.expected);
+  if (expected) return { object: expected, by: definition.expected };
+
+  for (const candidate of definition.candidates) {
+    const found = asset.getObjectByName(candidate);
+    if (found) return { object: found, by: candidate };
+  }
+
+  const wanted = normalizeNodeName(definition.expected);
+  let fallback = null;
+  asset.traverse((child) => {
+    if (fallback || !child.name) return;
+    if (normalizeNodeName(child.name) === wanted) fallback = child;
+  });
+  return fallback ? { object: fallback, by: fallback.name } : { object: null, by: null };
+}
+
+/**
+ * The node names the viewmodel hides, and why.
+ *
+ * These are the parts of a weapon model that only make sense in first person: the
+ * loose round the mag-swap animation spawns copies of, the spent casing the
+ * ejection throws, and the red dot that is swapped in when aiming. They are
+ * authored into the model but never meant to be seen sitting in the gun.
+ *
+ * Exported because a character holding a copy of the same model needs the exact
+ * same treatment, and a second list is a second thing to forget to update. The
+ * loaded shell is deliberately not here: it stays in the gun, in first person
+ * and in a character's hands alike.
+ */
+export const VIEWMODEL_HIDDEN_REFERENCES = Object.freeze(['bulletTemplate', 'shellTemplate', 'redDot']);
+
+/**
+ * Resolves the weapon model's named nodes.
+ *
+ * Split out of GLBWeaponRig so the character-held copy of a model can find the
+ * same nodes without constructing a whole rig for a static prop - a rig is the
+ * viewmodel's animated state machine, and standing one up per remote player
+ * would log a reference audit per player and carry mag-swap and bolt state that
+ * a held gun never uses.
+ */
+export function findWeaponReferences(asset) {
+  const references = {};
+  for (const definition of REFERENCE_DEFINITIONS) {
+    // resolveReferenceIn reports which name matched as well as the node; the
+    // caller wants the node, which is what every other reference in this file
+    // holds.
+    references[definition.key] = resolveReferenceIn(asset, definition).object ?? null;
+  }
+  return references;
+}
+
+/** Hides the first-person-only nodes on a model, in place. */
+export function hideViewmodelOnlyParts(references) {
+  for (const key of VIEWMODEL_HIDDEN_REFERENCES) {
+    const node = references?.[key];
+    if (node) node.visible = false;
+  }
+}
 
 export class GLBWeaponRig {
   constructor({ model, asset, mechanics, boltTravelOverride = null }) {
@@ -48,6 +128,8 @@ export class GLBWeaponRig {
     this.referenceAudit = null;
     this.adsLocalPosition = null;
     this.adsReferenceName = null;
+    // Resolved on first use by getShellInsertTransform, then cached.
+    this.shellInsert = null;
     this.templateWorldScales = new Map();
     this.muzzleDirection = new THREE.Vector3(0, 0, -1);
     this.muzzleDirectionLocal = new THREE.Vector3(0, 0, -1);
@@ -140,21 +222,7 @@ export class GLBWeaponRig {
    * point under a name none of the aliases spelled out.
    */
   resolveReference(definition) {
-    const expected = this.asset.getObjectByName(definition.expected);
-    if (expected) return { object: expected, by: definition.expected };
-
-    for (const candidate of definition.candidates) {
-      const found = this.asset.getObjectByName(candidate);
-      if (found) return { object: found, by: candidate };
-    }
-
-    const wanted = normalizeNodeName(definition.expected);
-    let fallback = null;
-    this.asset.traverse((child) => {
-      if (fallback || !child.name) return;
-      if (normalizeNodeName(child.name) === wanted) fallback = child;
-    });
-    return fallback ? { object: fallback, by: fallback.name } : { object: null, by: null };
+    return resolveReferenceIn(this.asset, definition);
   }
 
   attachSightsToBolt() {
@@ -303,6 +371,11 @@ export class GLBWeaponRig {
       this.boltTravelDirection.copy(backwardInParent).normalize();
       const scale = bolt.parent.getWorldScale(new THREE.Vector3()).x || 1;
       this.boltLocalTravel = (this.boltTravelOverride !== undefined && this.boltTravelOverride !== null ? this.boltTravelOverride : this.config.bolt.travel) / scale;
+      // The handle is pulled straight back along the bore and returns along the
+      // same line. Rotating it was tried - both as a vertical translation and as
+      // a turn about the bore - to get a Karabiner 98 read, but on this model
+      // the node is the whole bolt carrier rather than a small lever, so neither
+      // articulated the handle. A straight pull is what this rig can do well.
     }
 
     const { chargingHandle } = this.references;
@@ -370,15 +443,30 @@ export class GLBWeaponRig {
     // The eject timer owns the shot clock. It advances for every weapon,
     // including models with no cycling bolt (the shotgun has no Bolt node, so
     // `updateBolt` never runs and used to swallow the eject callback).
-    if (this.boltElapsed < this.config.bolt.duration) this.boltElapsed += delta;
+    if (this.boltElapsed < this.boltCycleDuration()) this.boltElapsed += delta;
     this.updateShellEjectTiming();
     this.updateBolt();
     this.updateTrigger(delta);
   }
 
+  /**
+   * Total wall time a fired round occupies the bolt: the dead time before the
+   * handle moves at all, plus the travel itself. A bolt-action is worked after
+   * the shot, not during it, so the cycle is deliberately longer than `duration`
+   * - this must stay under the weapon's fireInterval, or the next round would be
+   * fired with the bolt still open.
+   */
+  boltCycleDuration() {
+    return (this.config.bolt.delay ?? 0) + this.config.bolt.duration;
+  }
+
   updateShellEjectTiming() {
     if (this.boltShellEjected) return;
-    if (this.boltElapsed < this.config.bolt.duration * 0.38) return;
+    // The case leaves when the bolt is drawn fully back, so the eject rides the
+    // same delayed clock as the handle rather than firing at the moment of the
+    // shot.
+    const delay = this.config.bolt.delay ?? 0;
+    if (this.boltElapsed < delay + this.config.bolt.duration * 0.38) return;
     this.boltShellEjected = true;
     this.pendingShellEject?.();
     this.pendingShellEject = null;
@@ -386,9 +474,11 @@ export class GLBWeaponRig {
 
   updateBolt() {
     const bolt = this.references.bolt;
-    if (!bolt || !this.boltBasePosition || this.boltElapsed >= this.config.bolt.duration) return;
+    const delay = this.config.bolt.delay ?? 0;
+    if (!bolt || !this.boltBasePosition) return;
+    if (this.boltElapsed < delay || this.boltElapsed >= delay + this.config.bolt.duration) return;
 
-    const progress = THREE.MathUtils.clamp(this.boltElapsed / this.config.bolt.duration, 0, 1);
+    const progress = THREE.MathUtils.clamp((this.boltElapsed - delay) / this.config.bolt.duration, 0, 1);
     let amount = 0;
     if (progress < 0.38) {
       const phase = progress / 0.38;
@@ -400,9 +490,19 @@ export class GLBWeaponRig {
       amount = 1 - smoothstep(phase);
     }
 
+    this.applyBoltOffset(bolt, amount);
+    if (progress >= 1) bolt.position.copy(this.boltBasePosition);
+  }
+
+  /**
+   * Places the bolt at `amount` through its cycle: 0 is home and locked, 1 is
+   * fully drawn back. The travel is a single straight pull along the bore,
+   * shared by the per-shot cycle and the post-reload cock so both move the
+   * handle the same way.
+   */
+  applyBoltOffset(bolt, amount) {
     bolt.position.copy(this.boltBasePosition)
       .addScaledVector(this.boltTravelDirection, this.boltLocalTravel * amount);
-    if (progress >= 1) bolt.position.copy(this.boltBasePosition);
   }
 
   updateTrigger(delta) {
@@ -478,8 +578,7 @@ export class GLBWeaponRig {
 
     const bolt = this.references.bolt;
     if (bolt && this.boltBasePosition) {
-      bolt.position.copy(this.boltBasePosition)
-        .addScaledVector(this.boltTravelDirection, this.boltLocalTravel * amount);
+      this.applyBoltOffset(bolt, amount);
       if (clamped >= 1) bolt.position.copy(this.boltBasePosition);
     }
     this.reloadBoltActive = clamped < 1;
@@ -613,6 +712,74 @@ export class GLBWeaponRig {
     const point = this.references.shellEjectPoint;
     if (!point) return false;
     point.getWorldPosition(positionTarget);
+    return true;
+  }
+
+  /**
+   * The tube's loading port, and the direction the tube runs, both in MODEL
+   * space - the same frame the support hand and any held shell live in, so a
+   * reload can be animated against the model's own geometry.
+   *
+   * The port is the REAR MOUTH of the tube, not the insert node's own origin.
+   * On shotgun.glb the node called "shell insert point" hangs the entire
+   * magazine tube off itself and sits well inside it, so aiming at the origin
+   * would bury a shell in the tube before the insert beat even began and the
+   * push would read as the round simply vanishing. When the node carries
+   * geometry, the mouth is that geometry's near end along the tube axis; a model
+   * that ships the node as a bare marker keeps the origin, which is already the
+   * mouth in that case.
+   *
+   * The axis is the node's own +X. Resolved through world matrices and then
+   * rotated into model space rather than read from local axes, so the asset's
+   * Y-up fit rotation is handled by the same matrices everything else uses.
+   *
+   * Cached: the model never deforms, and this walks a bounding box.
+   */
+  getShellInsertTransform(positionTarget, directionTarget) {
+    if (!this.shellInsert) {
+      const point = this.references.shellInsertPoint;
+      if (!point) return false;
+
+      this.model.updateWorldMatrix(true, false);
+      const origin = point.getWorldPosition(new THREE.Vector3());
+      const axis = new THREE.Vector3().setFromMatrixColumn(point.matrixWorld, 0).normalize();
+
+      let mouth = origin;
+      if (point.isMesh) {
+        // World box, pulled back into the node's own frame so the extent is
+        // measured along the tube rather than along the world axes - an
+        // AABB projected onto a rotated axis would over-reach.
+        const world = new THREE.Box3().setFromObject(point);
+        if (!world.isEmpty()) {
+          const toLocal = new THREE.Matrix4().copy(point.matrixWorld).invert();
+          const local = new THREE.Box3();
+          for (let corner = 0; corner < 8; corner += 1) {
+            local.expandByPoint(new THREE.Vector3(
+              (corner & 1) ? world.max.x : world.min.x,
+              (corner & 2) ? world.max.y : world.min.y,
+              (corner & 4) ? world.max.z : world.min.z,
+            ).applyMatrix4(toLocal));
+          }
+          // +X runs toward the muzzle, so the mouth is the local -X face,
+          // taken on the tube's own centre line.
+          mouth = new THREE.Vector3(
+            local.min.x,
+            (local.min.y + local.max.y) / 2,
+            (local.min.z + local.max.z) / 2,
+          ).applyMatrix4(point.matrixWorld);
+        }
+      }
+
+      const modelMouth = this.model.worldToLocal(mouth);
+      const modelAhead = this.model.worldToLocal(mouth.clone().add(axis));
+      this.shellInsert = {
+        position: modelMouth,
+        direction: modelAhead.sub(modelMouth).normalize(),
+      };
+    }
+
+    positionTarget.copy(this.shellInsert.position);
+    if (directionTarget) directionTarget.copy(this.shellInsert.direction);
     return true;
   }
 }

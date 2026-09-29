@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { GAME_CONFIG } from '../config.js';
+import { GAME_CONFIG, WEAPON_MODELS } from '../config.js';
 import { InputManager } from './InputManager.js';
 import { AudioManager } from './AudioManager.js';
 import { EffectPool } from './EffectPool.js';
@@ -8,6 +8,8 @@ import { NavigationGrid } from '../navigation/NavigationGrid.js';
 import { PlayerController } from '../player/PlayerController.js';
 import { WeaponSystem } from '../player/WeaponSystem.js';
 import { BotSpawner } from '../enemies/BotSpawner.js';
+import { loadBotSkin } from '../characters/MinecraftCharacter.js';
+import { preloadHeldWeapons } from '../characters/HeldWeapons.js';
 import { UIManager } from '../ui/UIManager.js';
 import { Scoreboard } from '../ui/Scoreboard.js';
 import { NetworkManager } from './NetworkManager.js';
@@ -170,37 +172,81 @@ export class Game {
 
     this.primaryWeapon = new WeaponSystem({
       scene: this.scene, camera: this.camera, player: this.player, arena: this.arena, effects: this.effects, audio: this.audio,
-      config: GAME_CONFIG.weapon, modelUrl: '/models/m416rifle.glb?v=4', displayName: 'M416', targetLength: 1.15, viewScale: 1.15,
-      basePosition: new THREE.Vector3(0.18, -0.37, -0.35), // Same placement as before
+      config: GAME_CONFIG.weapon, ...WEAPON_MODELS[0],
+      // The rifle's HIP pose, used as the base the shoulder hold is measured
+      // from. It sits lower than it shipped. This is the hip pose only - the
+      // default carry is the shoulder hold above it, and ADS derives its own y
+      // from the model's adsaimpoint, so the sight picture is untouched.
+      basePosition: new THREE.Vector3(0.18, -0.40, -0.35), // Same placement as before
       modelOffset: new THREE.Vector3(0, 0, 0), // Reset offset so it doesn't stick out forward
       callbacks: createWeaponCallbacks(() => this.primaryWeapon),
     });
 
     this.secondaryWeapon = new WeaponSystem({
       scene: this.scene, camera: this.camera, player: this.player, arena: this.arena, effects: this.effects, audio: this.audio,
-      config: GAME_CONFIG.secondaryWeapon, modelUrl: '/models/Pistol.glb', displayName: 'Pistol', targetLength: 0.42, viewScale: 1.0,
+      config: GAME_CONFIG.secondaryWeapon, ...WEAPON_MODELS[1],
       basePosition: new THREE.Vector3(0.18, -0.37, -0.35), // Same placement as M4
       callbacks: createWeaponCallbacks(() => this.secondaryWeapon),
     });
 
     this.tertiaryWeapon = new WeaponSystem({
       scene: this.scene, camera: this.camera, player: this.player, arena: this.arena, effects: this.effects, audio: this.audio,
-      config: GAME_CONFIG.shotgun, modelUrl: '/models/shotgun.glb', displayName: 'Shotgun', targetLength: 1.45, viewScale: 1.45,
+      // `viewScale` is trimmed slightly off the rifle/shotgun default of 1.45 so the
+      // shotgun reads a touch smaller without changing its proportions -
+      // `targetLength` is left alone so the model still fits itself correctly.
+      config: GAME_CONFIG.shotgun, ...WEAPON_MODELS[2],
       basePosition: new THREE.Vector3(0.18, -0.37, -0.35), // Same placement
       callbacks: createWeaponCallbacks(() => this.tertiaryWeapon),
     });
 
-    this.weapons = [this.primaryWeapon, this.secondaryWeapon, this.tertiaryWeapon];
+    // The sniper is the longest gun in the game. Its `targetLength` of 1.66 fits the
+    // mesh to its real barrel proportions, but where it sits is set below.
+    this.quaternaryWeapon = new WeaponSystem({
+      scene: this.scene, camera: this.camera, player: this.player, arena: this.arena, effects: this.effects, audio: this.audio,
+      config: GAME_CONFIG.sniper, ...WEAPON_MODELS[3],
+      // The sniper's HIP pose, which the default shoulder hold is measured
+      // from: further right, higher and further forward than the other three
+      // guns. The forward push is what keeps the bolt handle and magazine on
+      // screen - both sit far back on this model, and at the rifle's depth they
+      // fall behind the near plane. Pushing forward also buys them margin, so
+      // the bolt never clips.
+      //
+      // `adsForwardOffset` is this gun's own, so the scoped view can be held
+      // still while the hip pose moves. At -0.70 the default -0.07 would put ADS
+      // at -0.77; -0.02 keeps it at the -0.72 this gun was tuned to, leaving
+      // the scoped sight picture exactly as it is.
+      basePosition: new THREE.Vector3(0.26, -0.34, -0.70),
+      adsForwardOffset: -0.02,
+      // Support (left) hand, in model space: +Z is back toward the eye, -Y is
+      // down. The GLB has no handguard node to hang a fist from, so this hand
+      // lands on the generic rifle fallback at (-0.04, -0.01, -0.20), which
+      // reaches too far forward and sits too high for a gun this long. Pulling
+      // it back and down keeps the fist on the forestock instead of out in
+      // front of the barrel.
+      leftHandOffset: new THREE.Vector3(0, -0.24, 0.13),
+      // No grip hand on this rifle. The GLB has no grip node to hang it from, so
+      // the fist would land on the generic fallback a few centimetres off the
+      // stock, floating beside the receiver rather than holding it. The other
+      // three guns keep theirs, and this is a per-weapon flag so it cannot reach
+      // them.
+      showRightHand: false,
+      modelOffset: new THREE.Vector3(0, 0, 0),
+      callbacks: createWeaponCallbacks(() => this.quaternaryWeapon),
+    });
+
+    this.weapons = [this.primaryWeapon, this.secondaryWeapon, this.tertiaryWeapon, this.quaternaryWeapon];
     this.activeWeaponIndex = 0;
     this.activeWeapon = this.primaryWeapon;
     this.player.weapon = this.activeWeapon;
     this.secondaryWeapon.model.visible = false;
     this.tertiaryWeapon.model.visible = false;
+    this.quaternaryWeapon.model.visible = false;
     this.primaryWeapon.model.visible = false;
 
     this.input.onDigit1 = () => this.switchWeapon(0);
     this.input.onDigit2 = () => this.switchWeapon(1);
     this.input.onDigit3 = () => this.switchWeapon(2);
+    this.input.onDigit4 = () => this.switchWeapon(3);
     this.input.onKeyE = () => {
       if (this.activeWeapon?.toggleSuppressor) {
         this.activeWeapon.toggleSuppressor();
@@ -211,8 +257,22 @@ export class Game {
         this.activeWeapon.toggleAltView();
       }
     };
-    this.input.onScrollUp = () => this.switchWeapon((this.activeWeaponIndex + 1) % this.weapons.length);
-    this.input.onScrollDown = () => this.switchWeapon((this.activeWeaponIndex - 1 + this.weapons.length) % this.weapons.length);
+    // The wheel does double duty. While a scoped weapon is aimed, it steps the
+    // magnification instead of cycling weapons, so the zoom stays under your
+    // finger and you never drop out of the scope to swap guns. The test is
+    // "does this weapon have an optic and are we looking through it", NOT the
+    // result of the zoom itself: a wheel notch at the end stop has to be
+    // swallowed, or it would fall through and change weapon mid-scope.
+    // Everything else - hip firing, or a weapon with no optic - cycles as before.
+    const scopedWheel = () => this.input.ads && Boolean(this.activeWeapon?.config?.scope);
+    this.input.onScrollUp = () => {
+      if (scopedWheel()) this.activeWeapon.zoomScope(1);
+      else this.switchWeapon((this.activeWeaponIndex + 1) % this.weapons.length);
+    };
+    this.input.onScrollDown = () => {
+      if (scopedWheel()) this.activeWeapon.zoomScope(-1);
+      else this.switchWeapon((this.activeWeaponIndex - 1 + this.weapons.length) % this.weapons.length);
+    };
 
     // Weapon switch animation state
     this.weaponSwitching = false;
@@ -328,7 +388,27 @@ export class Game {
     this.currentMapName = 'arena';
     this.updateEnvironment('arena');
 
-    await Promise.all([this.primaryWeapon.ready, this.secondaryWeapon.ready]);
+    // The 1v1 opponent wears a real skin file instead of the procedural one.
+    // Seeded before the menu appears so the very first duel already has it, and
+    // non-fatal: a missing file just leaves the old procedural PRO skin in place
+    // rather than stranding the game on the loading screen.
+    await loadBotSkin('pro', '/pictures/skins-de-minecraft.png')
+      .catch((error) => console.warn('Falling back to the procedural PRO skin.', error));
+
+    // The four weapon models, so a multiplayer opponent can be seen holding the
+    // gun they actually picked. Fetched alongside the skins rather than awaited
+    // as a gate: a gun that is late or missing leaves the character with its
+    // premade rifle instead of holding up the menu.
+    preloadHeldWeapons();
+
+    // All four, so the sniper can never be selected while its model is still
+    // loading and hand the player the fallback box instead.
+    await Promise.all([
+      this.primaryWeapon.ready,
+      this.secondaryWeapon.ready,
+      this.tertiaryWeapon.ready,
+      this.quaternaryWeapon.ready,
+    ]);
     requestAnimationFrame(() => {
       if (this.state === 'LOADING') {
         this.showMenu();
@@ -448,6 +528,9 @@ export class Game {
         this.activeWeapon.model.visible = true;
         this.ui.setAmmo(this.activeWeapon.magazine, this.activeWeapon.reserve, this.activeWeapon.reloading, this.activeWeapon.reloadElapsed, this.activeWeapon.config);
         this.ui.setActiveWeaponIcon(this.activeWeaponIndex, this.activeWeapon.displayName);
+        // Tell the room which gun is in our hands now, so our character is seen
+        // holding this weapon rather than the one it was holding a moment ago.
+        if (this.isMultiplayer && this.network) this.network.sendWeaponChanged(this.activeWeaponIndex);
 
         this.switchPhase = 'up';
         this.switchElapsed = 0;
@@ -496,6 +579,8 @@ export class Game {
     this.input.releasePointerLock();
     this.ui.setCaptureHint(false);
     this.ui.setADS(0);
+    this.ui.setScopeOverlay(false, 0);
+    this.ui.setScopeReadout(0, false);
     this.ui.show('pause');
   }
 
@@ -691,6 +776,11 @@ export class Game {
     };
     this.input.setEnabled(false);
     this.ui.setADS(0);
+    // Dying while aimed would otherwise leave the scope overlay covering the
+    // death cam, and the viewmodel hidden, since neither is driven once the
+    // weapon stops updating.
+    this.ui.setScopeOverlay(false, 0);
+    this.ui.setScopeReadout(0, false);
     // Paint the countdown immediately rather than on the next tick, so the
     // banner is never a frame behind the kill.
     this.ui.setDuelBanner(DEATH_CAM_SECONDS, this.deathCam.killerName);
@@ -924,8 +1014,17 @@ export class Game {
       this.updateWeaponSwitch(delta);
       this.spawner.update(delta, { player: this.player, elapsed: this.elapsed });
       this.activeWeapon.updateTransientEffects(delta);
-      this.ui.setADS(this.player.adsAmount);
+      // The optic readout and the screen-space scope both follow the active
+      // weapon's scope, so they appear the moment the sniper is aimed and
+      // track the scroll wheel. A weapon with no optic reports 0 and both
+      // switch themselves off. `scope` is read first because setADS needs it:
+      // a scoped weapon hands its crosshair over to the reticle and is excluded
+      // from the usual crosshair-hides-on-aim behaviour.
+      const scope = this.activeWeapon.getScopeMagnification() > 0;
+      this.ui.setADS(this.player.adsAmount, scope);
       this.ui.setMoveState(this.player.adsActive ? 'AIM' : this.player.sprinting && this.player.currentSpeed > 4.5 ? 'SPRINT' : this.player.grounded ? 'READY' : 'AIRBORNE');
+      this.ui.setScopeReadout(this.activeWeapon.getScopeMagnification(), this.player.adsActive);
+      this.ui.setScopeOverlay(scope, this.player.adsAmount);
     } else {
       this.outcomeTimer -= delta;
       for (const bot of this.spawner.bots) {
@@ -998,6 +1097,9 @@ export class Game {
 
       this.arena.update(delta, this.elapsed);
       if (this.network) this.network.update(delta, this.elapsed * 1000);
+      // Drives the scoreboard's match clock. It only writes to the DOM when the
+      // displayed second changes, so this is cheap enough to run every frame.
+      this.scoreboard?.tick();
 
       this.effects.update(delta);
       this.audio.updateListener(this.camera);

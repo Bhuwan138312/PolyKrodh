@@ -4,9 +4,36 @@ import { GAME_CONFIG } from '../config.js';
 import { GLBWeaponRig } from './GLBWeaponRig.js';
 import { WeaponProjectileSystem } from './WeaponProjectileSystem.js';
 import { ShellEjectionSystem } from './ShellEjectionSystem.js';
-import { WeaponHands } from './WeaponHands.js';
+import { WeaponHands, SHELL_LOAD_BEAT } from './WeaponHands.js';
+
+/**
+ * The soldier (shoulder) hold: how far the viewmodel sits up and in from the
+ * gun's own hip pose. This is the DEFAULT carry for every weapon - the gun
+ * comes up onto the shoulder out of the box - and Q drops it back down to the
+ * hip. Model +Z runs back toward the camera, so a negative z here pushes the
+ * gun further away, not closer.
+ *
+ * It stays an OFFSET from each weapon's own hip placement rather than a second
+ * absolute position, so the per-weapon tuning (how far forward the sniper has
+ * to sit, how low the rifle rides) still describes the hip pose and the
+ * shoulder hold inherits it.
+ */
+const SOLDER_FIRE_OFFSET = new THREE.Vector3(-0.06, 0.13, -0.07);
+
+/**
+ * How much further away the gun sits while aiming, relative to its own hip-fire
+ * depth. The sight line has to recede, never come back toward the eye.
+ *
+ * This is a per-weapon option rather than a hardcoded constant so a gun can be
+ * held further forward in hip fire without dragging its scoped view along with
+ * it. It stays an OFFSET from the weapon's own hip depth either way, so the
+ * failure this replaced - a single absolute depth that only suits one weapon -
+ * cannot come back.
+ */
+const ADS_FORWARD_OFFSET = -0.07;
+
 export class WeaponSystem {
-  constructor({ scene, camera, player, arena, effects, audio, config, modelUrl, displayName, targetLength = 1.25, viewScale = 1.3, callbacks = {}, basePosition = new THREE.Vector3(0.18, -0.32, -0.48), modelRotationX = 0, modelRotationY = Math.PI / 2, modelRotationZ = 0, modelOffset = new THREE.Vector3(0, 0, 0), boltTravelOverride = null, fallbackTemplatesSource = null }) {
+  constructor({ scene, camera, player, arena, effects, audio, config, modelUrl, displayName, targetLength = 1.25, viewScale = 1.3, callbacks = {}, basePosition = new THREE.Vector3(0.18, -0.32, -0.48), modelRotationX = 0, modelRotationY = Math.PI / 2, modelRotationZ = 0, modelOffset = new THREE.Vector3(0, 0, 0), boltTravelOverride = null, fallbackTemplatesSource = null, adsForwardOffset = ADS_FORWARD_OFFSET, leftHandOffset = null, showRightHand = true }) {
     this.scene = scene;
     this.camera = camera;
     this.player = player;
@@ -24,13 +51,38 @@ export class WeaponSystem {
     this.modelRotationZ = modelRotationZ;
     this.modelOffset = modelOffset;
     this.boltTravelOverride = boltTravelOverride;
+    this.leftHandOffset = leftHandOffset;
+    this.showRightHand = showRightHand;
     this.suppressorEnabled = false;
     this.suppressorParts = [];
     this.altViewEnabled = false;
-    this.defaultBasePosition = basePosition.clone();
-    this.altBasePosition = new THREE.Vector3(0.12, -0.24, -0.42); // Pulled backward (closer to camera)
-    this.targetBasePosition = basePosition.clone();
+    // Each weapon ships ONE tuned placement, its hip pose. The shoulder
+    // ("soldier") hold - the default carry for every gun - is SOLDER_FIRE_OFFSET
+    // up from it, and Q toggles back down to the hip.
+    this.hipPosition = basePosition.clone();
+    this.shoulderPosition = basePosition.clone().add(SOLDER_FIRE_OFFSET);
+    // The default pose is the shoulder hold, so a match starts with the gun up
+    // on the shoulder rather than hanging at the hip.
+    this.defaultBasePosition = this.shoulderPosition.clone();
+    // Q parks the viewmodel at the low hip carry. It is an offset from the
+    // weapon's OWN placement rather than a second absolute position: a
+    // hardcoded point only ever looked right for a gun sitting exactly where
+    // the rifle sits, and any weapon placed further out - the sniper, held
+    // well forward down the screen - got yanked backward toward the camera
+    // instead.
+    this.altBasePosition = this.hipPosition.clone();
+    this.targetBasePosition = this.defaultBasePosition.clone();
+    // The -0.06 yaw rides the shoulder hold, not the hip one: it compensates
+    // for the 3D perspective distortion of a gun carried up and back from the
+    // eye, so it still reads as straight rather than swung out to the right.
+    this.defaultBaseRotation = new THREE.Euler(0.0, -0.06, 0.0);
+    this.altBaseRotation = new THREE.Euler(0.0, 0.0, 0.0);
+    this.targetBaseRotation = this.defaultBaseRotation.clone();
     this.fallbackTemplatesSource = fallbackTemplatesSource;
+    // Index into config.scope.magnifications, for weapons that have a scope.
+    // A weapon without one keeps this at 0 and is never asked for a zoom level.
+    const scope = config.scope;
+    this.scopeStep = scope ? THREE.MathUtils.clamp(scope.defaultStep ?? 0, 0, scope.magnifications.length - 1) : 0;
     this.input = player.input;
     this.magazine = this.config.magazineSize;
     this.reserve = this.config.reserveSize;
@@ -42,15 +94,23 @@ export class WeaponSystem {
     this.weaponKick = 0;
     this.spread = 0;
     this.adsAmount = 0;
+    // Whether the scoped viewmodel is currently swapped out for the 2D overlay.
+    // Latches, so it survives the frame the input sits on the threshold.
+    this.viewmodelHidden = false;
     this.shotCounter = 0;
     this.sprintCarryAmount = 0;
     // Krunker-style: muzzle faces crosshair, natural slant from Z-tilt, offset right
-    this.basePosition = basePosition;
-    this.adsPosition = new THREE.Vector3(0, -0.19, -0.42);
-    this.baseRotation = new THREE.Euler(0.0, 0.0, 0.0);
-    this.defaultBaseRotation = this.baseRotation.clone();
-    this.altBaseRotation = new THREE.Euler(0.0, -0.06, 0.0); // Compensate for 3D perspective distortion so it looks straight
-    this.targetBaseRotation = this.baseRotation.clone();
+    // Starts on the shoulder hold, not the hip pose, so the gun never visibly
+    // rises into place on spawn or on a match reset.
+    this.basePosition = this.defaultBasePosition.clone();
+    // The sight line always sits further from the eye than the hip pose,
+    // expressed as an offset from this weapon's OWN depth. A fixed absolute
+    // depth here is what put the sniper's scope inside the camera: it is held
+    // well forward in hip fire, so aiming at the rifle's fixed depth yanked it
+    // back toward the player.
+    this.adsForwardOffset = adsForwardOffset;
+    this.adsPosition = new THREE.Vector3(0, -0.19, basePosition.z + adsForwardOffset);
+    this.baseRotation = this.defaultBaseRotation.clone();
     this.adsRotation = new THREE.Euler(0.0, 0, 0);
     this.aimRaycaster = new THREE.Raycaster();
     this.aimRaycaster.near = 0;
@@ -95,6 +155,11 @@ export class WeaponSystem {
     this.pelletConfig = this.config.pellets ?? null;
     this.isShotgun = Boolean(this.pelletConfig);
     this.shellReloadSettings = this.config.mechanics.shellReload ?? null;
+    this.shellPortPoint = new THREE.Vector3();
+    this.shellPortDir = new THREE.Vector3(0, 0, -1);
+    // The port in NDC, refreshed each frame from the live holder transform, so
+    // the hand only reaches for it when the player can actually see it.
+    this.shellPortProjected = new THREE.Vector3(0, 0, -1);
     this.shellReload = {
       needed: 0,
       inserted: 0,
@@ -338,6 +403,8 @@ export class WeaponSystem {
       asset,
       isPistol: this.targetLength < 0.5,
       displayName: this.displayName,
+      leftHandOffset: this.leftHandOffset,
+      showRightHand: this.showRightHand,
       fallbackHandsSource: this.fallbackTemplatesSource?.hands
     });
 
@@ -389,9 +456,29 @@ export class WeaponSystem {
     this.shellReload.needed = 0;
     this.shellReload.inserted = 0;
     this.shellReload.loaded = -1;
+    // Drops any round still stuck to the fist and brings the support hand home,
+    // so a reload cut off by a death does not follow the player into the next
+    // match.
+    this.hands?.resetShellLoad();
     this.clearTransientEffects();
+    // Back to the default shoulder hold. The pose is a live lerp toward its
+    // target, so a reset that landed while Q had the gun down at the hip would
+    // otherwise carry that hip carry into the next match instead of starting
+    // from the default the way the constructor does.
+    this.altViewEnabled = false;
+    this.basePosition.copy(this.defaultBasePosition);
+    this.targetBasePosition.copy(this.defaultBasePosition);
+    this.baseRotation.copy(this.defaultBaseRotation);
+    this.targetBaseRotation.copy(this.defaultBaseRotation);
     this.weaponHolder.position.copy(this.basePosition);
     this.weaponHolder.rotation.copy(this.baseRotation);
+    // Always restore the viewmodel on reset. update() hides it while a scope is
+    // up, and a reset that happened mid-aim would otherwise leave the gun
+    // invisible on the next spawn. The latch has to clear with it, or the next
+    // aim would leave the holder hidden and the rising `visible = true` above
+    // would be undone on the very next frame.
+    this.viewmodelHidden = false;
+    this.weaponHolder.visible = true;
     this.flash.visible = false;
 
     this.emitAmmo();
@@ -412,6 +499,31 @@ export class WeaponSystem {
     // Krunker-style: fast snap-back recoil recovery
     this.weaponKick *= Math.exp(-22 * delta);
     this.adsAmount = THREE.MathUtils.clamp(this.player.adsAmount, 0, 1);
+    // A scoped weapon hands the screen over to the 2D scope overlay in three
+    // beats - a visible rifle raise, then the mask closing, then the viewmodel
+    // dropped behind it. The thresholds are in config.ads.scopeOverlay.
+    //
+    // The viewmodel still has to be dropped at the end rather than left drawn:
+    // at full aim the eye sits inside the scope tube, so a drawn viewmodel means
+    // the tube's inner wall wraps around the viewfinder.
+    //
+    // The holder is hidden rather than the model, because model.visible is owned
+    // by the weapon-switch code in Game.js; the two compose cleanly.
+    if (this.config.scope) {
+      const { viewmodelHiddenAt, viewmodelBackAt } = GAME_CONFIG.player.ads.scopeOverlay;
+      // `viewmodelHiddenAt` is past `maskFull`, so the rifle is behind solid
+      // black when it is dropped and cannot be seen going. It comes back at
+      // `viewmodelBackAt`, which is `maskFull`, so it is restored while the
+      // mask is still opaque and emerges as the vignette opens rather than
+      // appearing in the open. The band between the two sits behind solid
+      // black, so toggling inside it cannot flicker visibly. Weapons with no
+      // scope are never touched.
+      if (!this.viewmodelHidden && this.adsAmount > viewmodelHiddenAt) this.viewmodelHidden = true;
+      else if (this.viewmodelHidden && this.adsAmount <= viewmodelBackAt) this.viewmodelHidden = false;
+      this.weaponHolder.visible = !this.viewmodelHidden;
+    } else {
+      this.weaponHolder.visible = true;
+    }
     this.weaponRig?.setAdsVisibility(this.adsAmount > 0.5);
     this.weaponRig?.update(delta);
     this.updateReload(delta);
@@ -431,18 +543,29 @@ export class WeaponSystem {
     this.callbacks.onSpread?.(this.spread + (this.pelletConfig ? this.pelletConfig.spread : 0));
 
     const reloadProgress = this.reloading ? this.reloadElapsed / this.getReloadDuration() : 0;
-    // The shotgun loads tubes, not magazines, so it skips the mag-swap hand
-    // animation and the mag-swap gun tilt entirely: its reload is pure ammo
-    // counting, which is also why it can be so quick.
-    if (!this.isShotgun) {
+    // A shotgun loads tubes, not magazines, so it skips the mag-swap hand
+    // animation and the mag-swap gun tilt entirely. It gets the tubular reload
+    // instead - the hand feeding rounds into the model's own loading port - which
+    // runs on its own clock below and is deliberately kept out of the mag-swap
+    // path so the two can never half-apply.
+    if (this.isShotgun) {
+      this.updateShellLoadAnimation(delta);
+    } else {
       this.hands?.updateReload(reloadProgress);
     }
-    // Reload animation: tilt gun LEFT, throw mag out, spawn new, return
+    // No dedicated loading pose. The shotgun's cant comes from the shared tilt
+    // below, so nothing extra is blended in here.
+    // Reload animation: tilt gun LEFT, throw mag out, spawn new, return.
+    // The shotgun shares this block, so it cants over exactly like the rifles
+    // and the sniper rather than taking a pose of its own. It keeps the gun on
+    // screen and in place, which is the whole point - the earlier dedicated pose
+    // lifted and pushed the viewmodel forward and read as the weapon flying away
+    // from the player.
     let reloadTiltZ = 0;
     let reloadTiltX = 0;
     let reloadOffsetY = 0;
     let reloadOffsetX = 0;
-    if (this.reloading && !this.isShotgun) {
+    if (this.reloading) {
       const p = reloadProgress;
       const sm = (t) => { const c = Math.min(Math.max(t, 0), 1); return c * c * (3 - 2 * c); };
       if (p < 0.15) {
@@ -512,6 +635,16 @@ export class WeaponSystem {
       THREE.MathUtils.lerp(this.baseRotation.z, this.adsRotation.z, this.adsAmount) + reloadTiltZ + runTilt,
     );
     this.weaponHolder.updateMatrixWorld(true);
+    // Resolved here, once the holder transform above is final, because that is
+    // the transform the port's visibility depends on. Cached into a plain vector
+    // rather than computed inside updateShellLoadAnimation, which runs earlier
+    // and would be reading last frame's holder.
+    if (this.isShotgun && this.shellPortPoint) {
+      this.shellPortProjected = (this.shellPortProjected ?? new THREE.Vector3())
+        .copy(this.shellPortPoint)
+        .applyMatrix4(this.model.matrixWorld)
+        .project(this.camera);
+    }
     if (this.input.wasPressed('KeyB') && (this.displayName === 'M416' || this.displayName === 'SCAR')) {
       this.fireMode = this.fireMode === 'auto' ? 'single' : 'auto';
       this.audio.play('dry'); // small click sound
@@ -659,6 +792,41 @@ export class WeaponSystem {
     this.altViewEnabled = !this.altViewEnabled;
     this.targetBasePosition.copy(this.altViewEnabled ? this.altBasePosition : this.defaultBasePosition);
     this.targetBaseRotation.copy(this.altViewEnabled ? this.altBaseRotation : this.defaultBaseRotation);
+  }
+
+  /**
+   * The magnification the scope is currently set to, or 0 for a weapon that has
+   * no scope at all. The HUD reads this to show what the player is looking
+   * through.
+   */
+  getScopeMagnification() {
+    return this.config.scope?.magnifications[this.scopeStep] ?? 0;
+  }
+
+  /**
+   * The field of view this weapon shows at full ADS, or null when it has no
+   * scope and should fall back to the shared `ads.fov`. A magnification of M
+   * shows baseFov / M, clamped so the scope never becomes a pinhole.
+   */
+  getAdsFov() {
+    const scope = this.config.scope;
+    if (!scope) return null;
+    const magnification = scope.magnifications[this.scopeStep] ?? scope.magnifications[0];
+    return Math.max(scope.minFov, GAME_CONFIG.player.baseFov / magnification);
+  }
+
+  /**
+   * Steps the scope one notch. `direction` is +1 to magnify and -1 to widen.
+   * Returns true when the setting actually changed, so the caller can skip
+   * work (and the HUD can ignore) a scroll that was already at the end stop.
+   */
+  zoomScope(direction) {
+    const scope = this.config.scope;
+    if (!scope) return false;
+    const next = THREE.MathUtils.clamp(this.scopeStep + direction, 0, scope.magnifications.length - 1);
+    if (next === this.scopeStep) return false;
+    this.scopeStep = next;
+    return true;
   }
 
   tryFire() {
@@ -931,12 +1099,17 @@ export class WeaponSystem {
       this.effects.hit(intersection.point, headshot);
       this.callbacks.onBotHit?.(bot, headshot ? damage.head : damage.body, intersection.point, headshot);
     } else if (isPlayer) {
-      // Simplistic headshot detection for remote players based on local Y height difference
-      const headshot = intersection.point.y > object.position.y + 0.6; 
+      // Remote players are the duel character, so the head is tagged on the mesh
+      // itself. The height band is only a fallback for anything that arrives
+      // untagged - a height test against a part's own local position is wrong
+      // now that a body is six boxes rather than one cylinder.
+      const headshot = object.userData.head !== undefined
+        ? Boolean(object.userData.head)
+        : intersection.point.y > object.position.y + 0.6;
       this.effects.hit(intersection.point, headshot);
       this.callbacks.onPlayerHit?.(
-        object.userData.id, 
-        headshot ? damage.head : damage.body, 
+        object.userData.id,
+        headshot ? damage.head : damage.body,
         headshot
       );
     } else {
@@ -1045,13 +1218,29 @@ export class WeaponSystem {
    * count rises by one for each shell that goes in. This deliberately does not
    * depend on the weapon model or on any animation, so a model that is missing
    * an attachment point can never leave the reload stuck.
+   *
+   * A round is granted at SHELL_LOAD_BEAT.insert, the point in the beat where the
+   * hand has pushed it down the tube, rather than on the beat boundary. The
+   * totals are identical either way - this only moves the tick from the start of
+   * a beat to the moment the round is actually in the gun, so the HUD does not
+   * claim a shell the animation has not loaded yet.
    */
   updateShellReload() {
     const state = this.shellReload;
     const interval = this.getShellLoadInterval();
-    const due = Math.min(state.needed, Math.floor((this.reloadElapsed + 1e-6) / interval));
+    // Where the reload is, measured in beats rather than seconds, so the ammo
+    // grant and the hand animation are driven off the same clock and cannot
+    // drift apart by a frame.
+    const beats = this.reloadElapsed / interval;
+    // A round is granted the moment the hand pushes it down the tube, not on the
+    // beat boundary - otherwise the HUD ticks a shell up while the hand is still
+    // on its way to the port. Totals are unchanged, only the tick moves.
+    const grantable = Math.min(
+      state.needed,
+      Math.max(0, Math.floor(beats - SHELL_LOAD_BEAT.insert) + 1),
+    );
 
-    while (state.inserted < due) {
+    while (state.inserted < grantable) {
       state.inserted += 1;
       this.magazine = Math.min(this.config.magazineSize, this.magazine + 1);
       this.reserve = Math.max(0, this.reserve - 1);
@@ -1064,10 +1253,70 @@ export class WeaponSystem {
 
     this.callbacks.onReloadProgress?.(this.magazine, this.reserve, this.reloadElapsed);
 
-    // Full tube, nothing left in reserve, or every missing shell is in: done.
-    if (this.magazine >= this.config.magazineSize || this.reserve <= 0 || state.inserted >= state.needed) {
-      this.finishShellReload();
+    // Done once the last round is in AND its follow-through has played, so the
+    // hand is not cut off mid-push. `getReloadDuration` is exactly `needed`
+    // beats, so this is also the frame the progress bar reaches full.
+    if (beats >= state.needed) this.finishShellReload();
+  }
+
+  /**
+   * Drives the support hand and the viewmodel's loading pose. Runs every frame
+   * the gun exists, not only while reloading, because the hand still has to walk
+   * back to the grip after the last round - the reload is over, the hand is not.
+   *
+   * `beat` is -1 when there is nothing to load, which is what puts the hand into
+   * its return rather than leaving it wherever the last beat ended.
+   */
+  updateShellLoadAnimation(delta) {
+    if (!this.hands) return;
+
+    // The port comes from the model's own `shell insert point`, resolved once by
+    // the rig. A model without one still reloads - the hand just stays on the
+    // grip and the ammo still counts up.
+    const hasPort = Boolean(this.weaponRig?.getShellInsertTransform(
+      this.shellPortPoint,
+      this.shellPortDir,
+    ));
+
+    let beat = -1;
+    let phase = 0;
+    if (this.reloading && this.isShotgun) {
+      const interval = this.getShellLoadInterval();
+      const position = this.reloadElapsed / interval;
+      const whole = Math.floor(position);
+      beat = Math.min(this.shellReload.needed - 1, whole);
+      phase = position - whole;
     }
+
+    // Only hand the port to the hand when the hand can actually be seen working
+    // it. Held in its normal carry the tube mouth is off the bottom of the
+    // screen and the point the fist has to stand at is behind the near plane, so
+    // without this the hand would dive out of frame and vanish mid-reload -
+    // worse than it never leaving the grip. The gun still cants over, and the
+    // ammo still counts up either way.
+    this.hands.updateShellLoad({
+      beat: this.shellPortVisible() ? beat : -1,
+      phase,
+      delta,
+      insertPoint: hasPort ? this.shellPortPoint : null,
+      insertDir: hasPort ? this.shellPortDir : null,
+    });
+  }
+
+  /**
+   * Whether the loading port is somewhere the player can see it.
+   *
+   * Projected through the camera rather than assumed, because it depends on the
+   * live holder transform - aim, sprint and the reload cant all move it. The
+   * hand is given a generous margin: it is a big object, and it only has to be
+   * close enough to read as working the tube.
+   */
+  shellPortVisible() {
+    if (this.shellPortProjected) {
+      const { x, y, z } = this.shellPortProjected;
+      return z > -1 && z < 1 && Math.abs(x) < 1.2 && Math.abs(y) < 1.2;
+    }
+    return false;
   }
 
   finishShellReload() {
