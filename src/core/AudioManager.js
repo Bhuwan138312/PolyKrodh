@@ -176,6 +176,7 @@ export class AudioManager {
       gunshot: () => this.gunshot(destination, now, 1, 130),
       m4_shot: () => this.m4_shot(destination, now, 1.2),
       shotgun_shot: () => this.shotgun_shot(destination, now, 1),
+      shotgun_cock: () => this.shotgun_cock(destination, now),
       shell_insert: () => this.click(destination, now, 1500, 0.03, 0.05),
       glock_shot: () => this.glock_shot(destination, now, 1.1),
       suppressed_shot: () => this.suppressed_shot(destination, now, 1.2),
@@ -401,6 +402,12 @@ export class AudioManager {
     } else {
       this.reload(destination, now);
     }
+  }
+
+  shotgun_cock(destination, now) {
+    // Mechanical racking sound: initial slide back click followed by heavy forward lock
+    this.click(destination, now, 1300, 0.045, 0.09);
+    this.click(destination, now + 0.13, 820, 0.05, 0.10);
   }
 
   dry(destination, now) {

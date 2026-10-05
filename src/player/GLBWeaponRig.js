@@ -505,6 +505,14 @@ export class GLBWeaponRig {
       .addScaledVector(this.boltTravelDirection, this.boltLocalTravel * amount);
   }
 
+  applyChargingHandleOffset(amount) {
+    const handle = this.references.chargingHandle;
+    if (handle && this.chargingHandleBasePosition) {
+      handle.position.copy(this.chargingHandleBasePosition)
+        .addScaledVector(this.chargingHandleTravelDirection, this.chargingHandleLocalTravel * amount);
+    }
+  }
+
   updateTrigger(delta) {
     const trigger = this.references.trigger;
     if (!trigger || !this.triggerBasePosition || this.triggerElapsed >= this.config.trigger.duration) return;

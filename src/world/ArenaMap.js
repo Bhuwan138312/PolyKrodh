@@ -6,6 +6,75 @@ import { CollisionWorld } from './CollisionWorld.js';
 const ARENA_SIZE = GAME_CONFIG.arenaHalfSize * 2;
 const DEFAULT_STEP_TOLERANCE = 0.5;
 
+function addProceduralMaterial(mat) {
+  // Respect the GLB model's authored PBR values. Only apply sane
+  // defaults when the model exported with obviously broken values
+  if (mat.metalness !== undefined && mat.metalness > 0.95 && mat.roughness < 0.05) {
+    mat.metalness = 0.3;
+    mat.roughness = 0.6;
+  }
+  
+  // Ensure environment map applies to all materials
+  mat.envMapIntensity = mat.envMapIntensity ?? 1.0;
+
+  // Inject procedural shader logic for noise, fake AO, and color correction
+  mat.onBeforeCompile = (shader) => {
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <common>',
+      `#include <common>
+       varying vec3 vWorldPos;`
+    );
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <worldpos_vertex>',
+      `#include <worldpos_vertex>
+       vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`
+    );
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <common>',
+      `#include <common>
+       varying vec3 vWorldPos;
+
+       // Simple 3D hash for noise
+       float hash(vec3 p) {
+         p = fract(p * 0.3183099 + 0.1);
+         p *= 17.0;
+         return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+       }
+       
+       // Basic 3D value noise
+       float noise3D(vec3 x) {
+         vec3 i = floor(x);
+         vec3 f = fract(x);
+         f = f * f * (3.0 - 2.0 * f);
+         return mix(mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
+                        mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                    mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                        mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+       }`
+    );
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+       
+       // Fake ambient occlusion near ground (contact shadows)
+       float groundDirt = smoothstep(1.5, 0.0, vWorldPos.y);
+       diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.1, 0.1, 0.08), groundDirt * 0.45);
+       `
+    );
+
+    shader.fragmentShader = shader.fragmentShader.replace(
+      '#include <roughnessmap_fragment>',
+      `#include <roughnessmap_fragment>
+       // Add roughness variation
+       float roughN = noise3D(vWorldPos * 3.0);
+       roughnessFactor = clamp(roughnessFactor + (roughN * 0.4 - 0.2), 0.2, 1.0);
+      `
+    );
+  };
+}
+
 export class ArenaMap {
   constructor(scene) {
     this.scene = scene;
@@ -147,8 +216,8 @@ export class ArenaMap {
           if (child.material) {
             const mats = Array.isArray(child.material) ? child.material : [child.material];
             mats.forEach(mat => {
-              if (mat.metalness !== undefined) mat.metalness = 0.1;
-              if (mat.roughness !== undefined) mat.roughness = 0.8;
+              addProceduralMaterial(mat);
+
               if (mapName === 'smalltdm' && child.geometry && child.geometry.attributes.color) {
                 mat.vertexColors = true;
               }
@@ -239,12 +308,12 @@ export class ArenaMap {
     this.scene.add(this.lightGroup);
 
     if (mapName === 'smalltdm') {
-      // Dim, ambient light to simulate ambient warehouse bouncing
-      const ambient = new THREE.AmbientLight(0xffeedd, 0.15);
+      // Indoor: minimal ambient, the spot light carries the scene
+      const ambient = new THREE.AmbientLight(0xffeedd, 0.10);
       this.lightGroup.add(ambient);
 
-      // Hemisphere: dim industrial ceiling bounce, dark floor bounce
-      const hemisphere = new THREE.HemisphereLight(0x555566, 0x1a1614, 0.4);
+      // Hemisphere: very dim so the spot creates real contrast
+      const hemisphere = new THREE.HemisphereLight(0x555566, 0x1a1614, 0.25);
       this.lightGroup.add(hemisphere);
 
       // Big yellow light in the middle of the roof, softened based on feedback
@@ -255,12 +324,12 @@ export class ArenaMap {
       sun.distance = 250;
       sun.decay = 2;
       sun.castShadow = true;
-      sun.shadow.mapSize.set(2048, 2048);
+      sun.shadow.mapSize.set(4096, 4096);
       sun.shadow.camera.near = 10;
       sun.shadow.camera.far = 100;
       sun.shadow.camera.fov = 85;
-      sun.shadow.bias = -0.0004;
-      sun.shadow.normalBias = 0.025;
+      sun.shadow.bias = -0.0003;
+      sun.shadow.normalBias = 0.02;
 
       this.lightGroup.add(sun);
 
@@ -270,35 +339,41 @@ export class ArenaMap {
       sun.target = target;
       this.sun = sun;
 
-      // Fill light: very subtle, just to ensure shadows aren't pitch black
-      const fill = new THREE.DirectionalLight(0x445566, 0.3);
+      // Single dim fill so shadows aren't pure black but stay dark
+      const fill = new THREE.DirectionalLight(0x334455, 0.18);
       fill.position.set(20, 10, 20);
       this.lightGroup.add(fill);
     } else {
-      // Default daylight for large arena
-      const ambient = new THREE.AmbientLight(0xffffff, 0.55);
+      // === Outdoor daylight ===
+      // Ambient kept very low so the sun creates real directional contrast.
+      const ambient = new THREE.AmbientLight(0xc8d8e8, 0.18);
       this.lightGroup.add(ambient);
 
-      const hemisphere = new THREE.HemisphereLight(0xdcebff, 0x8f8578, 0.9);
+      // Hemisphere: cool blue sky above, warm brown earth below. Low intensity.
+      const hemisphere = new THREE.HemisphereLight(0x8ab4d8, 0x6b5840, 0.4);
       this.lightGroup.add(hemisphere);
 
-      const sun = new THREE.DirectionalLight(0xfff6ea, 2.6);
-      sun.position.set(-20, 45, 20);
+      // Strong warm sun — the dominant light source for the entire scene.
+      const sun = new THREE.DirectionalLight(0xffecc8, 2.8);
+      sun.position.set(-25, 40, 15);
       sun.castShadow = true;
-      sun.shadow.mapSize.set(2048, 2048);
-      sun.shadow.camera.left = -42;
-      sun.shadow.camera.right = 42;
-      sun.shadow.camera.top = 42;
-      sun.shadow.camera.bottom = -42;
+      sun.shadow.mapSize.set(4096, 4096);
+      sun.shadow.camera.left = -50;
+      sun.shadow.camera.right = 50;
+      sun.shadow.camera.top = 50;
+      sun.shadow.camera.bottom = -50;
       sun.shadow.camera.near = 1;
       sun.shadow.camera.far = 350;
-      sun.shadow.bias = -0.0004;
-      sun.shadow.normalBias = 0.025;
+      sun.shadow.bias = -0.0003;
+      sun.shadow.normalBias = 0.02;
+      sun.shadow.radius = 3;
       this.lightGroup.add(sun);
       this.sun = sun;
 
-      const fill = new THREE.DirectionalLight(0xdce8ff, 0.6);
-      fill.position.set(30, 30, -25);
+      // A single cool fill from the opposite side — simulates sky bounce.
+      // Much dimmer than the sun so the lighting reads as directional.
+      const fill = new THREE.DirectionalLight(0x8eaacc, 0.35);
+      fill.position.set(30, 20, -25);
       this.lightGroup.add(fill);
     }
   }
@@ -715,6 +790,10 @@ export class ArenaMap {
   }
 
   box({ size, position, material, collider = false, cover = false, castRay = false, castShadow = false, receiveShadow = true }) {
+    if (material.isMeshStandardMaterial && !material.userData.proceduralApplied) {
+      addProceduralMaterial(material);
+      material.userData.proceduralApplied = true;
+    }
     const mesh = new THREE.Mesh(new THREE.BoxGeometry(...size), material);
     mesh.position.set(...position);
     mesh.castShadow = castShadow;

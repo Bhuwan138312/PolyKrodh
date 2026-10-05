@@ -56,36 +56,64 @@ export class Game {
     this.camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.045, 500);
     this.camera.rotation.order = 'YXZ';
 
-    // Viewmodel fill light. The gun sits a few centimeters from the lens, so
-    // it's extremely sensitive to whatever angle the world sun/fill happen to
-    // be coming from — that's why it was reading dark/flat against a bright
-    // background. A small light parented to the camera keeps it evenly lit
-    // regardless of which way the player is facing.
-    // Note: using DirectionalLight rather than PointLight on purpose — in
-    // current three.js, PointLight/SpotLight intensity is in physical
-    // candela units, where a value like 1.4 is nearly invisible. Directional
-    // lights use the same simple unitless scale as the sun/fill above, so the
-    // intensity here behaves predictably.
-    this.viewmodelLight = new THREE.DirectionalLight(0xfff2d9, 1.2);
-    this.viewmodelLight.position.set(0.3, 0.6, 0.4); // relative to camera, up and slightly behind
+    // === Viewmodel lighting rig ===
+    // The gun sits centimeters from the lens and is extremely sensitive to
+    // whatever angle the world lights come from. A three-light rig parented to
+    // the camera keeps it evenly lit regardless of facing direction.
+    //
+    // Key light: warm, slightly above and right — this is the main gun fill.
+    this.viewmodelLight = new THREE.DirectionalLight(0xfff2d9, 1.6);
+    this.viewmodelLight.position.set(0.3, 0.6, 0.4);
     this.viewmodelLightTarget = new THREE.Object3D();
-    this.viewmodelLightTarget.position.set(0, -0.3, -1); // aim down-forward, where the gun sits
+    this.viewmodelLightTarget.position.set(0, -0.3, -1);
     this.viewmodelLight.target = this.viewmodelLightTarget;
     this.viewmodelLight.castShadow = false;
     this.camera.add(this.viewmodelLight);
     this.camera.add(this.viewmodelLightTarget);
+
+    // Fill light: cool, from the opposite side so the left side of the gun
+    // isn't a flat black silhouette. Kept dimmer than the key.
+    this.viewmodelFill = new THREE.DirectionalLight(0xc8deff, 0.7);
+    this.viewmodelFill.position.set(-0.4, 0.3, 0.2);
+    this.viewmodelFillTarget = new THREE.Object3D();
+    this.viewmodelFillTarget.position.set(0.1, -0.2, -1);
+    this.viewmodelFill.target = this.viewmodelFillTarget;
+    this.viewmodelFill.castShadow = false;
+    this.camera.add(this.viewmodelFill);
+    this.camera.add(this.viewmodelFillTarget);
+
+    // Rim/back light: subtle warm highlight on the top edge of the gun for
+    // depth separation against the background.
+    this.viewmodelRim = new THREE.DirectionalLight(0xffe8c0, 0.4);
+    this.viewmodelRim.position.set(0, 0.8, 0.8);
+    this.viewmodelRimTarget = new THREE.Object3D();
+    this.viewmodelRimTarget.position.set(0, -0.1, -0.6);
+    this.viewmodelRim.target = this.viewmodelRimTarget;
+    this.viewmodelRim.castShadow = false;
+    this.camera.add(this.viewmodelRim);
+    this.camera.add(this.viewmodelRimTarget);
+
     this.scene.add(this.camera); // camera must be in the scene graph for its children to render
+
+    // === Renderer ===
     this.renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
+    this.renderer.toneMappingExposure = 0.92;
     this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.applyGraphicsQuality(localStorage.getItem('graphicsQuality') || 'high');
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.domElement.id = 'game-canvas';
     this.renderer.domElement.setAttribute('aria-label', 'PolyKrodh 3D arena');
     container.querySelector('#viewport').appendChild(this.renderer.domElement);
+
+    // === Environment map for PBR reflections ===
+    // Without an environment map, metallic/glossy materials (gun parts, metal
+    // surfaces) look pitch black because there is nothing to reflect. A PMREM-
+    // processed procedural gradient gives every MeshStandardMaterial in the
+    // scene something to reflect, bringing out realistic specular highlights.
+    this.buildEnvironmentMap();
 
     this.audio = new AudioManager();
     this.effects = new EffectPool(this.scene);
@@ -321,6 +349,10 @@ export class Game {
           this.network.socket.emit('startGame', this.ui.map);
         }
       },
+      // Team selection. Routed straight to the socket - the server decides
+      // whether the slot is really free and tells everyone, so this does not
+      // touch any team state of its own.
+      selectTeam: (intent) => this.network?.selectTeam(intent),
       leaveLobby: () => {
         if (this.network) this.network.disconnect();
         this.isMultiplayer = false;
@@ -375,11 +407,16 @@ export class Game {
   updateEnvironment(mapName) {
     if (mapName === 'smalltdm') {
       this.scene.background = new THREE.Color(0x1a1614);
-      this.scene.fog = new THREE.Fog(0x1a1614, 20, 150);
+      this.scene.fog = new THREE.Fog(0x1a1614, 15, 120);
     } else {
-      this.scene.background = new THREE.Color(0xaed4f5); // Default daylight sky
-      this.scene.fog = new THREE.Fog(0xaed4f5, 120, 350);
+      // A saturated, believable sky — not pure white-blue.
+      this.scene.background = new THREE.Color(0x6ba3d6);
+      // Atmospheric perspective: strong contrast near, fading to haze far.
+      // Fog colour is slightly warmer/lighter than the sky to read as haze.
+      this.scene.fog = new THREE.Fog(0x9cb8d4, 40, 220);
     }
+    // Rebuild the environment map so reflections match the new map's palette.
+    this.buildEnvironmentMap();
   }
 
   async init() {
@@ -691,7 +728,8 @@ export class Game {
 
   handleBotDeath(bot) {
     this.kills += 1;
-    this.ui.announceKill(bot.type.name);
+    const weaponName = this.player.weapon?.config?.name?.toLowerCase().replace(/\s/g, '') || 'assaultrifle';
+    this.ui.announceKill('YOU', bot.type.name.toUpperCase(), weaponName, true, false);
     this.ui.setEnemies(this.spawner.getAlive());
     if (this.isDuel) {
       // A duel round is lost, not the match: the bot comes back shortly, at a
@@ -899,7 +937,7 @@ export class Game {
       this.respawnTimer = 3; // seconds
       this.respawnKillerId = killerId;
       this.player.health.kill();
-      this.ui.announceKill('You were killed!');
+      this.ui.announceKill('ENEMY', 'YOU', 'assaultrifle', false, true);
       return;
     }
 
@@ -1054,15 +1092,15 @@ export class Game {
       case 'medium':
         this.renderer.setPixelRatio(1.0);
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.BasicShadowMap;
-        break;
-      case 'high':
-        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
-        this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFShadowMap;
         break;
+      case 'high':
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+        this.renderer.shadowMap.enabled = true;
+        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        break;
       case 'ultra':
-        this.renderer.setPixelRatio(Math.max(window.devicePixelRatio, 1.5));
+        this.renderer.setPixelRatio(Math.max(window.devicePixelRatio, 2.0));
         this.renderer.shadowMap.enabled = true;
         this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
         break;
@@ -1077,6 +1115,65 @@ export class Game {
         }
       }
     });
+  }
+
+  /**
+   * Generates a procedural environment cubemap and assigns it to the scene.
+   *
+   * Without an environment map, every MeshStandardMaterial with any metalness
+   * looks pitch-black because there is literally nothing for the PBR shader
+   * to reflect. This gives every surface in the game a soft gradient to
+   * bounce off of — the guns get specular highlights, metal railings catch
+   * light, and even diffuse surfaces benefit from the ambient term.
+   *
+   * The gradient is generated once in a tiny offscreen cube render target and
+   * processed through Three's PMREM pipeline, so it costs almost nothing at
+   * runtime.
+   */
+  buildEnvironmentMap() {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    pmrem.compileEquirectangularShader();
+
+    // Build a tiny scene with a gradient background for the cubemap capture.
+    const envScene = new THREE.Scene();
+
+    // Sky gradient: top colour (zenith) to bottom (ground bounce).
+    // Read from the current scene background so it matches indoor/outdoor.
+    const bg = this.scene.background;
+    const isIndoor = bg && bg.r < 0.2 && bg.g < 0.2 && bg.b < 0.2;
+
+    // For the cubemap we paint six faces with a colour that represents what
+    // that hemisphere would bounce. Outdoors that is bright sky above and
+    // warm earth below; indoors it is dim warm ceiling and darker floor.
+    // Darker, more saturated gradient — the old values were too bright and
+    // washed out every surface that reflected them.
+    const topColor    = isIndoor ? new THREE.Color(0x2a2520) : new THREE.Color(0x4a7a9e);
+    const horizColor  = isIndoor ? new THREE.Color(0x1e1a16) : new THREE.Color(0x9a9080);
+    const bottomColor = isIndoor ? new THREE.Color(0x100e0a) : new THREE.Color(0x4a4030);
+
+    // A large sphere with a vertex-colour gradient serves as the environment.
+    const geo = new THREE.SphereGeometry(100, 32, 16);
+    const colors = new Float32Array(geo.attributes.position.count * 3);
+    const posAttr = geo.attributes.position;
+    for (let i = 0; i < posAttr.count; i++) {
+      const y = posAttr.getY(i) / 100; // -1..1
+      let c;
+      if (y > 0) {
+        c = horizColor.clone().lerp(topColor, y);
+      } else {
+        c = horizColor.clone().lerp(bottomColor, -y);
+      }
+      colors[i * 3]     = c.r;
+      colors[i * 3 + 1] = c.g;
+      colors[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const mat = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide });
+    envScene.add(new THREE.Mesh(geo, mat));
+
+    const envMap = pmrem.fromScene(envScene, 0, 0.1, 1000).texture;
+    this.scene.environment = envMap;
+    pmrem.dispose();
   }
 
   bindLoop() {

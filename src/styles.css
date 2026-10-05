@@ -417,6 +417,262 @@ button {
   width: min(650px, calc(100vw - 40px));
 }
 
+/* ------------------------------------------------------- the team lobby */
+/* Replaces the flat player list. Three columns: the two teams with their four
+   slots each, and the players who have not picked a side in between.
+   Square corners throughout, with a cut corner on the two things you can click,
+   to match the clipped primary buttons rather than rounded cards. The team
+   colours are deliberately muted - they tint a panel edge and an accent bar, and
+   never become a large fill. */
+.lobby-panel {
+  width: min(940px, calc(100vw - 40px));
+}
+
+.lobby-teams {
+  display: grid;
+  grid-template-columns: 1fr 158px 1fr;
+  gap: 10px;
+  margin-top: 15px;
+}
+
+.lobby-team {
+  --accent: var(--cyan);
+  --accent-soft: rgba(139, 224, 218, 0.3);
+  --accent-faint: rgba(139, 224, 218, 0.09);
+  --accent-glow: rgba(139, 224, 218, 0.14);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--accent-soft);
+  background:
+    linear-gradient(180deg, var(--accent-faint), transparent 58%),
+    rgba(3, 14, 20, 0.72);
+}
+
+.lobby-team-blue {
+  --accent: #5b9be8;
+  --accent-soft: rgba(91, 155, 232, 0.34);
+  --accent-faint: rgba(91, 155, 232, 0.1);
+  --accent-glow: rgba(91, 155, 232, 0.17);
+}
+
+.lobby-team-red {
+  --accent: #e2605a;
+  --accent-soft: rgba(226, 96, 90, 0.34);
+  --accent-faint: rgba(226, 96, 90, 0.1);
+  --accent-glow: rgba(226, 96, 90, 0.17);
+}
+
+.lobby-team-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 9px 11px 7px;
+  border-bottom: 1px solid var(--accent-soft);
+  background: var(--accent-faint);
+}
+
+.lobby-team-title {
+  color: var(--accent);
+  font: 800 0.88rem/1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: 0.16em;
+}
+
+/* The short tick, echoing the corner ticks on .panel. */
+.lobby-team-title::before {
+  content: "";
+  display: inline-block;
+  width: 13px;
+  height: 3px;
+  margin-right: 8px;
+  vertical-align: middle;
+  background: var(--accent);
+}
+
+.lobby-team-count {
+  color: var(--muted);
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+}
+
+.lobby-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px;
+}
+
+.lobby-slot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 42px;
+  padding: 0 11px;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  letter-spacing: 0.06em;
+}
+
+/* Occupied: a name in a flat block with the team colour as an edge. */
+.lobby-slot.is-filled {
+  background: rgba(0, 0, 0, 0.34);
+  box-shadow: inset 3px 0 0 var(--accent);
+  color: var(--white);
+  cursor: default;
+}
+
+/* Empty, and therefore the only part of the column that does anything. */
+.lobby-slot.is-empty {
+  justify-content: center;
+  border: 1px dashed var(--accent-soft);
+  background: transparent;
+  color: var(--accent);
+  font-size: 1.3rem;
+  cursor: pointer;
+  clip-path: polygon(0 0, calc(100% - 10px) 0, 100% 10px, 100% 100%, 0 100%);
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.lobby-slot.is-empty:hover:not(:disabled) {
+  background: var(--accent-glow);
+  color: var(--white);
+}
+
+/* No clickable slot left, either because the sides are frozen or because the
+   server refused this one - either way it stops looking like a target. */
+.lobby-slot.is-locked {
+  border: 1px solid rgba(139, 224, 218, 0.09);
+  color: #3c5053;
+  font-size: 0.9rem;
+  cursor: default;
+  clip-path: none;
+}
+
+.lobby-slot-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.86rem;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.lobby-chip {
+  flex: none;
+  padding: 2px 5px;
+  border: 1px solid currentColor;
+  font-size: 0.53rem;
+  line-height: 1;
+  letter-spacing: 0.12em;
+}
+
+.lobby-chip-you {
+  color: var(--amber);
+}
+
+.lobby-chip-host {
+  color: var(--cyan);
+}
+
+/* The middle column. Kept distinct from both teams with the cyan secondary and
+   a dashed edge rather than a team colour. */
+.lobby-avail {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px dashed rgba(139, 224, 218, 0.2);
+  background: rgba(3, 14, 20, 0.5);
+}
+
+.lobby-avail-head {
+  padding: 9px 10px 7px;
+  border-bottom: 1px solid rgba(139, 224, 218, 0.2);
+  color: var(--cyan);
+  font: 800 0.74rem/1 "Bahnschrift Condensed", "Arial Narrow", sans-serif;
+  letter-spacing: 0.16em;
+  text-align: center;
+}
+
+.lobby-avail-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px;
+}
+
+.lobby-avail-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 0 6px 0 8px;
+  border-left: 3px solid rgba(139, 224, 218, 0.28);
+  background: rgba(0, 0, 0, 0.3);
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
+.lobby-avail-row.is-you {
+  border-left-color: var(--amber);
+  color: var(--white);
+}
+
+.lobby-avail-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* Yellow, because taking a side is the primary action on this screen - the same
+   colour as START MATCH. */
+.lobby-avail-join {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--amber);
+  background: transparent;
+  color: var(--amber);
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+  cursor: pointer;
+  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 6px), calc(100% - 6px) 100%, 0 100%);
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.lobby-avail-join:hover:not(:disabled) {
+  background: var(--amber);
+  color: #071b20;
+}
+
+.lobby-avail-join:disabled {
+  border-color: rgba(145, 166, 167, 0.26);
+  color: #46595b;
+  cursor: default;
+  clip-path: none;
+}
+
+.lobby-avail-hint {
+  margin: auto 8px 9px;
+  color: #5e7678;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-align: center;
+}
+
+/* A refusal from the server lands here, so a click never silently does nothing. */
+.lobby-avail-hint.is-refused {
+  color: var(--red);
+}
+
 .controls-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -1295,14 +1551,14 @@ button {
 }
 
 .kill-item {
-  min-width: 175px;
-  padding: 8px 10px;
-  border-right: 2px solid var(--amber);
-  background: linear-gradient(90deg, transparent, rgba(5, 20, 28, 0.82));
+  display: flex;
+  align-items: stretch;
+  height: 32px;
   opacity: 0;
   transform: translateX(20px);
   transition: 220ms ease;
-  text-align: right;
+  filter: drop-shadow(0 4px 6px rgba(0,0,0,0.5));
+  margin-bottom: 8px;
 }
 
 .kill-item.visible {
@@ -1310,22 +1566,70 @@ button {
   transform: translateX(0);
 }
 
-.kill-item span,
-.kill-item strong {
-  display: block;
+.kill-item-inner {
+  display: flex;
+  align-items: stretch;
+  transform: skewX(-20deg);
+  border-radius: 2px;
+  overflow: hidden;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.05);
 }
 
-.kill-item span {
-  color: var(--amber);
-  font-size: 0.5rem;
-  letter-spacing: 0.14em;
+.kill-killer {
+  background: linear-gradient(90deg, #10345e, #06182c);
+  padding: 0 15px 0 20px;
+  color: white;
+  font-family: 'Bahnschrift Condensed', 'Arial Narrow', sans-serif;
+  font-size: 1.1rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
 }
 
-.kill-item strong {
-  margin-top: 2px;
-  color: #d9e3df;
-  font-size: 0.65rem;
-  letter-spacing: 0.09em;
+.kill-killer.friendly {
+  border-left: 4px solid #1fa3ff;
+}
+
+.kill-killer.enemy {
+  background: linear-gradient(90deg, #590f19, #8f1725);
+  border-left: 4px solid #f23c4a;
+}
+
+.kill-weapon {
+  background: #171b21;
+  padding: 0 15px;
+  display: flex;
+  align-items: center;
+}
+
+.kill-weapon img {
+  height: 18px;
+  transform: skewX(20deg);
+  filter: brightness(0) invert(1);
+}
+
+.kill-victim {
+  background: linear-gradient(90deg, #590f19, #8f1725);
+  padding: 0 20px 0 15px;
+  color: white;
+  font-family: 'Bahnschrift Condensed', 'Arial Narrow', sans-serif;
+  font-size: 1.1rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+}
+
+.kill-victim.enemy {
+  border-right: 4px solid #f23c4a;
+}
+
+.kill-victim.friendly {
+  background: linear-gradient(90deg, #10345e, #06182c);
+  border-right: 4px solid #1fa3ff;
+}
+
+.kill-killer span, .kill-victim span {
+  transform: skewX(20deg);
 }
 
 .reload-prompt {
@@ -1525,6 +1829,26 @@ button {
     grid-template-columns: 1fr;
   }
 
+  /* Three columns will not fit a phone, so the available list becomes a strip
+     across the top and the two teams sit side by side underneath it. */
+  .lobby-teams {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .lobby-avail {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .lobby-avail-list {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .lobby-avail-row {
+    flex: 1 1 130px;
+  }
+
   .panel {
     max-height: calc(100vh - 24px);
     padding: 25px;
@@ -1540,6 +1864,22 @@ button {
   .menu-content {
     transform: scale(0.84);
     transform-origin: left center;
+  }
+
+  /* Eight slots plus headers will not fit a short window at full height, so the
+     rows compress. They stay far above the tap-target floor because this only
+     applies to mouse-sized screens. */
+  .lobby-slot {
+    min-height: 33px;
+  }
+
+  .lobby-avail-row {
+    min-height: 25px;
+  }
+
+  .lobby-slots,
+  .lobby-avail-list {
+    gap: 5px;
   }
 }
 

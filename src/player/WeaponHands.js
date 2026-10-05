@@ -16,11 +16,10 @@ const SUPPORT_GRIP_NAMES = ['ddmk18_handguard_15', 'ak200_handguard_11', 'Suppor
  * between segments.
  */
 export const SHELL_LOAD_BEAT = Object.freeze({
-  grab: 0.28,   // hand has arrived at the ammunition and closes on the round
-  carry: 0.40,   // round is picked up and starts toward the port
-  align: 0.64,   // round is squared up with the tube axis, nose at the mouth
-  insert: 0.80,  // pushed down the tube - the frame the shell count rises on
-  follow: 0.92,  // hand carries through past the port and settles
+  grab: 0.28,    // hand arrives at belt/pouch and grabs shell
+  align: 0.62,   // hand brings shell up to loading port entrance
+  insert: 0.80,  // hand pushes shell completely into the tube
+  follow: 0.92,  // brief settle before next shell
 });
 
 /** A 12-gauge round: 60 mm long, 18.5 mm across the brass. */
@@ -42,6 +41,7 @@ const UP = new THREE.Vector3(0, 1, 0);
 const clamp01 = (value) => (value < 0 ? 0 : value > 1 ? 1 : value);
 const easeInCubic = (t) => clamp01(t) ** 3;
 const easeOutCubic = (t) => 1 - ((1 - clamp01(t)) ** 3);
+const easeInOutQuad = (t) => { const c = clamp01(t); return c < 0.5 ? 2 * c * c : 1 - Math.pow(-2 * c + 2, 2) / 2; };
 /**
  * Smootherstep. The gentlest of the curves, and the one the long reaches use.
  *
@@ -124,6 +124,12 @@ export class WeaponHands {
     this.leftHandBasePos = this.leftHand.position.clone();
     this.leftHandBaseRot = this.leftHand.rotation.clone();
     this.leftHandBaseQuat = this.leftHand.quaternion.clone();
+
+    if (this.rightHand) {
+      this.rightHandBasePos = this.rightHand.position.clone();
+      this.rightHandBaseRot = this.rightHand.rotation.clone();
+      this.rightHandBaseQuat = this.rightHand.quaternion.clone();
+    }
 
     this.group.add(this.leftHand);
     if (this.rightHand) this.group.add(this.rightHand);
@@ -238,12 +244,18 @@ export class WeaponHands {
    * stops, so the hand can finish its walk back to the grip after the last round
    * instead of being left hanging at the port.
    */
-  updateShellLoad({ beat = -1, phase = 0, delta = 0, insertPoint = null, insertDir = null } = {}) {
+  /**
+   * The tubular reload: the left support hand moves down to grab a 12-gauge round,
+   * brings it up directly underneath the loading port, and pushes it forward
+   * into the magazine tube. Repeats smoothly for each missing shell.
+   *
+   * The arm rotation is strictly constrained so the sleeve always points
+   * down and back into the player's body/shoulder (natural kinematics),
+   * never inverting or pointing into the sky.
+   */
+  updateShellLoad({ beat = -1, phase = 0, delta = 0, isLast = false, insertPoint = null, insertDir = null } = {}) {
     if (!this.leftHand) return;
 
-    // A port is required: the whole animation is built around feeding a round
-    // into it, and guessing one would put shells in the wrong place on a model
-    // that ships its own. The gun leaves the hand on the grip and still reloads.
     if (insertPoint) {
       this.shellInsertPoint.copy(insertPoint);
       if (insertDir && insertDir.lengthSq() > 1e-8) this.shellInsertDir.copy(insertDir).normalize();
@@ -259,133 +271,93 @@ export class WeaponHands {
     const dir = this.shellInsertDir;
     const port = this.shellInsertPoint;
 
-    // Where the round lives relative to the fist, and where the fist has to
-    // stand for the round's nose to reach a given point on the tube.
-    const shellFromHand = dir.clone().multiplyScalar(HAND_TO_NOSE - (SHELL_LENGTH / 2));
-    const handFromNose = dir.clone().multiplyScalar(-HAND_TO_NOSE);
-    const source = port.clone().add(SOURCE_OFFSET);
-    // Square with the tube: the round's nose is here, the brass is HAND_TO_NOSE
-    // further back, and the fist that far behind that.
-    const alignHand = port.clone().add(handFromNose);
-    // Pushed all the way in, so the round is inside the tube rather than at its
-    // mouth - the hand follows it in and then settles just short of the port.
-    const insertHand = port.clone().add(handFromNose).addScaledVector(dir, SHELL_LENGTH);
-
-    const b = SHELL_LOAD_BEAT;
-
-    // Cache where this beat started, so the hand travels from its real current
-    // pose rather than snapping to a stored one. Re-read on a new beat, and on
-    // one that restarts rather than continues: `reached` records that this
-    // beat's reach has already been played out, so coming back to it - a
-    // reload that starts again while the hand is still walking back to the grip
-    // lands on the same beat number - reads the pose the hand is genuinely in.
-    // Re-reading mid-beat is harmless for the later phases, which aim at
-    // absolute points and never consult this.
-    if (state.beat !== beat || state.reached || phase < state.startPhase) {
+    // Cache start pose at the beginning of each beat
+    if (state.beat !== beat || phase < state.startPhase) {
       state.beat = beat;
-      state.reached = false;
       state.startPhase = phase;
       state.startPos.copy(this.leftHand.position);
       state.startQuat.copy(this.leftHand.quaternion);
       state.returning = false;
     }
-    if (phase >= b.grab) state.reached = true;
 
+    // Key kinematics poses (in model space):
+    // 1. Grab pose: hand reaches down-inboard towards shooter's belt/pouch
+    const grabPos = new THREE.Vector3(-0.07, -0.22, 0.06);
+    const grabQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.85, -0.35, -0.15));
+
+    // 2. Align pose: hand positions the shell directly underneath the loading port mouth
+    const alignPos = port.clone().add(new THREE.Vector3(-0.03, -0.04, 0.02));
+    const alignQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.70, -0.42, -0.20));
+
+    // 3. Insert pose: hand pushes forward along the tube axis
+    const insertPos = alignPos.clone().addScaledVector(dir, 0.045);
+    const insertQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.65, -0.45, -0.22));
+
+    // Shell relative to the hand's palm:
+    const shellLocalOffset = new THREE.Vector3(0.032, 0.022, -0.015);
     const shellQuat = new THREE.Quaternion().setFromUnitVectors(UP, dir);
-    let handTarget = alignHand;    let handQuat = shellQuat;
-    let shellVisible = true;
-    let shellCentre = alignHand.clone().add(shellFromHand);
+    const grabShellQuat = shellQuat.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.35, 0, 0.12)));
+
+    const b = SHELL_LOAD_BEAT;
 
     if (phase < b.grab) {
-      // Reach down to the belt. Slowing into the end so the arrival reads as a
-      // grab rather than a pass-by.
+      // 1. Reach down for shell: hand travels from current pose to belt
       const t = smootherstep(phase / b.grab);
-      handTarget = state.startPos.clone().lerp(source, t);
-      // Wrist rolls over as the hand goes down for the round.
-      handQuat = state.startQuat.clone().slerp(shellQuat, t * 0.6);
-      // Nothing in the fist yet.
-      shellVisible = false;
-    } else if (phase < b.carry) {
-      // Fingers close on the round. The shell appears here, at the ammunition,
-      // and from here on it is the same object riding the whole way in.
-      const t = easeOutCubic((phase - b.grab) / (b.carry - b.grab));
-      handTarget = source;
-      // A short curl toward the palm, then back out as the hand lifts - the
-      // close and the release are the only finger motion in the cycle.
-      const curl = Math.sin(t * Math.PI) * 0.5;
-      handQuat = shellQuat.clone().multiply(
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(curl * 0.5, 0, 0)),
-      );
-      shellCentre = source.clone().add(shellFromHand);
+      this.leftHand.position.lerpVectors(state.startPos, grabPos, t);
+      this.leftHand.quaternion.slerpQuaternions(state.startQuat, grabQuat, t);
+
+      // Shell appears in hand as fingers close on it at the pouch
+      if (phase >= b.grab * 0.55) {
+        this.shellProp.visible = true;
+        const shellPos = this.leftHand.position.clone().add(shellLocalOffset.clone().applyQuaternion(this.leftHand.quaternion));
+        this.shellProp.position.copy(shellPos);
+        this.shellProp.quaternion.copy(grabShellQuat);
+      } else {
+        this.shellProp.visible = false;
+      }
     } else if (phase < b.align) {
-      // Carry it to the port, nose leading along the tube axis.
-      const t = smootherstep((phase - b.carry) / (b.align - b.carry));
-      handTarget = source.clone().lerp(alignHand, t);
-      handQuat = shellQuat.clone().multiply(
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.sin(t * Math.PI) * 0.18, 0, 0)),
-      );
-      shellCentre = handTarget.clone().add(shellFromHand);
+      // 2. Bring shell up to the loading port
+      const t = smootherstep((phase - b.grab) / (b.align - b.grab));
+      this.leftHand.position.lerpVectors(grabPos, alignPos, t);
+      this.leftHand.quaternion.slerpQuaternions(grabQuat, alignQuat, t);
+
+      this.shellProp.visible = true;
+      const shellPos = this.leftHand.position.clone().add(shellLocalOffset.clone().applyQuaternion(this.leftHand.quaternion));
+      this.shellProp.position.copy(shellPos);
+      this.shellProp.quaternion.copy(grabShellQuat.clone().slerp(shellQuat, t));
     } else if (phase < b.insert) {
-      // Square the last of the travel: the round rotates onto the tube axis and
-      // creeps the rest of the way to the mouth. Separate from the push so the
-      // aim and the force are two readable movements.
-      const t = easeOutCubic((phase - b.align) / (b.insert - b.align));
-      handTarget = alignHand;
-      handQuat = shellQuat.clone().multiply(
-        new THREE.Quaternion().setFromEuler(new THREE.Euler((1 - t) * 0.16, 0, 0)),
-      );
-      shellCentre = alignHand.clone().add(shellFromHand);
-    } else if (phase < b.follow) {
-      // The push. Accelerating in, so it reads as force rather than a slide.
-      const t = easeInCubic((phase - b.insert) / (b.follow - b.insert));
-      handTarget = alignHand.clone().lerp(insertHand, t);
-      handQuat = shellQuat;
-      shellCentre = handTarget.clone().add(shellFromHand);
-    } else {
-      // Follow through: the hand carries a little past the port, then settles
-      // back onto the hold. It starts from exactly where the push ended, so the
-      // two join without a step. By now the round is inside the tube, which is
-      // what hides it - it is never switched off mid-travel.
-      const t = easeOutCubic((phase - b.follow) / (1 - b.follow));
-      const carry = Math.sin(t * Math.PI);
-      handTarget = insertHand.clone().addScaledVector(dir, SHELL_LENGTH * 0.18 * carry);
-      handQuat = shellQuat.clone().multiply(
-        new THREE.Quaternion().setFromEuler(new THREE.Euler(carry * 0.22, 0, 0)),
-      );
-      shellCentre = handTarget.clone().add(shellFromHand);
-      // Inside the tube, behind its own geometry.
-      shellVisible = false;
-    }
+      // 3. Push shell forward into the magazine tube
+      const t = easeInCubic((phase - b.align) / (b.insert - b.align));
+      this.leftHand.position.lerpVectors(alignPos, insertPos, t);
+      this.leftHand.quaternion.slerpQuaternions(alignQuat, insertQuat, t);
 
-    this.leftHand.position.copy(handTarget);
-    this.leftHand.quaternion.copy(handQuat);
-
-    this.shellProp.visible = shellVisible;
-    if (shellVisible) {
-      this.shellProp.position.copy(shellCentre);
+      this.shellProp.visible = true;
+      const shellPos = this.leftHand.position.clone().add(shellLocalOffset.clone().applyQuaternion(this.leftHand.quaternion));
+      this.shellProp.position.copy(shellPos);
       this.shellProp.quaternion.copy(shellQuat);
+    } else {
+      // 4. Seated: Round is inside the tube (ammo increments, sound plays, kick bumps)
+      this.shellProp.visible = false;
+
+      // Follow-through: ease toward next round's grab position or back to handguard if last round
+      const nextTargetPos = isLast ? this.leftHandBasePos : grabPos;
+      const nextTargetQuat = isLast ? this.leftHandBaseQuat : grabQuat;
+      const t = easeOutCubic((phase - b.insert) / (1.0 - b.insert));
+      this.leftHand.position.lerpVectors(insertPos, nextTargetPos, t * 0.7);
+      this.leftHand.quaternion.slerpQuaternions(insertQuat, nextTargetQuat, t * 0.7);
     }
   }
 
   /**
-   * The walk back to the grip after the last round, run off a real clock rather
-   * than the reload's own progress: the reload is over, but the hand still has
-   * to get there. Fades in from wherever the hand actually stopped, so
-   * cancelling a reload mid-beat does not snap it.
+   * Smoothly returns the support hand back to the handguard grip once reload is over.
    */
   updateShellReturn(delta) {
+    if (!this.leftHand) return;
     const state = this.shellLoad;
-    if (!this.hasShellInsert) {
-      this.restLeftHand();
-      return;
-    }
+    if (this.shellProp) this.shellProp.visible = false;
 
     if (!state.returning) {
       state.returning = true;
-      // The cached beat is meaningless with no load in progress, and dropping it
-      // is what makes a reload that starts while the hand is still walking back
-      // re-read its start pose instead of reaching for the pose the cancelled
-      // reload left behind.
       state.beat = -1;
       state.returnElapsed = 0;
       state.returnFrom.copy(this.leftHand.position);
@@ -394,16 +366,13 @@ export class WeaponHands {
 
     state.returnElapsed += delta;
     const t = Math.min(1, state.returnElapsed / SHELL_RETURN_DURATION);
-    // Ease in and out, and land exactly on the rest pose rather than near it.
-    const eased = t >= 1 ? 1 : smootherstep(t);
-    this.leftHand.position.copy(state.returnFrom).lerp(this.leftHandBasePos, eased);
-    this.leftHand.quaternion.copy(state.returnFromQuat).slerp(this.leftHandBaseQuat, eased);
+    const eased = smootherstep(t);
 
-    this.shellProp.visible = false;
+    this.leftHand.position.lerpVectors(state.returnFrom, this.leftHandBasePos, eased);
+    this.leftHand.quaternion.slerpQuaternions(state.returnFromQuat, this.leftHandBaseQuat, eased);
 
     if (t >= 1) {
       state.returning = false;
-      state.beat = -1;
       this.restLeftHand();
     }
   }
@@ -412,14 +381,73 @@ export class WeaponHands {
   restLeftHand() {
     this.leftHand.position.copy(this.leftHandBasePos);
     this.leftHand.rotation.copy(this.leftHandBaseRot);
-    this.shellProp.visible = false;
+    this.leftHand.quaternion.copy(this.leftHandBaseQuat);
+    if (this.shellProp) this.shellProp.visible = false;
   }
 
   /**
-   * Drops any in-flight shell load and puts the hand back on the grip. Called
-   * when a match resets, so a reload that was cut off by a death or a weapon
-   * switch does not leave a round stuck to the fist or the hand stranded at the
-   * loading port.
+   * Post-reload charging handle pull: right hand reaches from the pistol grip
+   * up to the charging handle on the right side of the receiver, pulls it back,
+   * lets it snap forward, and returns to the grip.
+   *
+   * Returns charging handle travel offset (0 to 1) for the weapon model rig.
+   */
+  updateChargingHandlePull(progress) {
+    if (!this.rightHand || !this.rightHandBasePos) return 0;
+
+    const clamped = THREE.MathUtils.clamp(progress, 0, 1);
+    if (clamped <= 0 || clamped >= 1) {
+      this.rightHand.position.copy(this.rightHandBasePos);
+      this.rightHand.quaternion.copy(this.rightHandBaseQuat);
+      return 0;
+    }
+
+    const restPos = this.rightHandBasePos;
+    const restQuat = this.rightHandBaseQuat;
+
+    // Charging handle location on receiver (right side):
+    const reachPos = new THREE.Vector3(0.055, 0.022, -0.11);
+    const reachQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.55, 0.35, -0.12));
+
+    // Pulled back position (~7cm rearward along receiver):
+    const pulledPos = new THREE.Vector3(0.055, 0.022, -0.04);
+    const pulledQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.58, 0.35, -0.12));
+
+    let handleOffset = 0;
+
+    if (clamped < 0.28) {
+      // 1. Reach: hand moves up from pistol grip to charging handle
+      const t = easeOutCubic(clamped / 0.28);
+      this.rightHand.position.lerpVectors(restPos, reachPos, t);
+      this.rightHand.quaternion.slerpQuaternions(restQuat, reachQuat, t);
+      handleOffset = 0;
+    } else if (clamped < 0.58) {
+      // 2. Pull: hand pulls the charging handle back
+      const t = easeInOutQuad((clamped - 0.28) / 0.30);
+      this.rightHand.position.lerpVectors(reachPos, pulledPos, t);
+      this.rightHand.quaternion.slerpQuaternions(reachQuat, pulledQuat, t);
+      handleOffset = t;
+    } else if (clamped < 0.68) {
+      // 3. Release: bolt snaps forward into battery, hand lets go
+      const t = easeInCubic((clamped - 0.58) / 0.10);
+      handleOffset = 1 - t;
+      const releasePos = pulledPos.clone().add(new THREE.Vector3(0.015, -0.01, 0.015));
+      this.rightHand.position.lerpVectors(pulledPos, releasePos, t);
+      this.rightHand.quaternion.slerpQuaternions(pulledQuat, restQuat, t * 0.25);
+    } else {
+      // 4. Return: hand returns from receiver down to the pistol grip
+      const t = smootherstep((clamped - 0.68) / 0.32);
+      const releasePos = pulledPos.clone().add(new THREE.Vector3(0.015, -0.01, 0.015));
+      this.rightHand.position.lerpVectors(releasePos, restPos, t);
+      this.rightHand.quaternion.slerpQuaternions(pulledQuat, restQuat, t);
+      handleOffset = 0;
+    }
+
+    return handleOffset;
+  }
+
+  /**
+   * Drops any in-flight shell load and smoothly returns hand to grip.
    */
   resetShellLoad() {
     this.shellLoad.beat = -1;
@@ -428,6 +456,11 @@ export class WeaponHands {
     this.shellLoad.returning = false;
     this.shellLoad.returnElapsed = 0;
     this.restLeftHand();
+    if (this.rightHand && this.rightHandBasePos) {
+      this.rightHand.position.copy(this.rightHandBasePos);
+      this.rightHand.rotation.copy(this.rightHandBaseRot);
+      this.rightHand.quaternion.copy(this.rightHandBaseQuat);
+    }
   }
 
   /**
@@ -483,6 +516,17 @@ export class WeaponHands {
     );
     rim.position.y = (-SHELL_LENGTH / 2) + 0.0025;
     group.add(rim);
+
+    // Primer cap on the brass base
+    const primerMaterial = new THREE.MeshStandardMaterial({
+      color: 0xb5b5b5, roughness: 0.3, metalness: 0.85, flatShading: true,
+    });
+    const primer = new THREE.Mesh(
+      new THREE.CylinderGeometry(SHELL_RADIUS * 0.38, SHELL_RADIUS * 0.38, 0.006, 8, 1, false),
+      primerMaterial,
+    );
+    primer.position.y = (-SHELL_LENGTH / 2) + 0.002;
+    group.add(primer);
 
     group.traverse((child) => {
       child.frustumCulled = false;

@@ -209,14 +209,36 @@
     </section>
 
     <section id="lobby-screen" class="screen modal-screen is-hidden">
-      <div class="panel how-panel" style="max-width: 600px;">
+      <div class="panel how-panel lobby-panel">
         <div class="panel-kicker">MULTIPLAYER</div>
         <h2>WAITING IN LOBBY</h2>
         
         <div style="color: var(--cyan); margin-top: 10px; font-size: 1.2rem;">ROOM: <span id="lobby-room-name"></span></div>
 
-        <div id="lobby-players-container" style="margin-top: 15px; height: 300px; overflow-y: auto; background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.1); padding: 10px; display: flex; flex-direction: column; gap: 8px;">
-          <!-- Players injected here -->
+        <!-- Team selection. The server owns which slot every player occupies; this
+             is only a view of that roster, so nothing here decides a team. -->
+        <div id="lobby-teams" class="lobby-teams">
+          <section class="lobby-team lobby-team-blue">
+            <div class="lobby-team-head">
+              <span class="lobby-team-title">BLUE TEAM</span>
+              <span class="lobby-team-count" id="lobby-blue-count">0/4</span>
+            </div>
+            <div class="lobby-slots" id="lobby-blue-slots"></div>
+          </section>
+
+          <section class="lobby-avail">
+            <div class="lobby-avail-head">AVAILABLE</div>
+            <div class="lobby-avail-list" id="lobby-avail-list"></div>
+            <p class="lobby-avail-hint" id="lobby-avail-hint">PICK A TEAM</p>
+          </section>
+
+          <section class="lobby-team lobby-team-red">
+            <div class="lobby-team-head">
+              <span class="lobby-team-title">RED TEAM</span>
+              <span class="lobby-team-count" id="lobby-red-count">0/4</span>
+            </div>
+            <div class="lobby-slots" id="lobby-red-slots"></div>
+          </section>
         </div>
 
         <div style="display: flex; gap: 10px; margin-top: 20px;">

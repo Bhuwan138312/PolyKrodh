@@ -1,6 +1,13 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from '../config.js';
 
+// The two sides, in the order they are drawn. The left column is always blue and
+// the right always red, so nothing here depends on who you are.
+const LOBBY_TEAMS = Object.freeze(['blue', 'red']);
+
+// How long a refusal from the server stays on screen.
+const LOBBY_REFUSAL_MS = 4000;
+
 export class UIManager {
   constructor({ audio, weaponConfig }) {
     this.audio = audio;
@@ -54,6 +61,13 @@ export class UIManager {
     this.callbacks = {};
     this.hitMarkerTimer = 0;
     this.killTimers = new Set();
+    // Team-lobby state. Deliberately only what the last snapshot said plus a
+    // timestamped refusal message; the roster itself is never cached here,
+    // because the server is the only authority on who is in which slot.
+    this.lobbyTeamSize = 4;
+    this.lobbyLocked = false;
+    this.lobbyRefusal = null;
+    this.lobbyTeamsEl = document.querySelector('#lobby-teams');
     this.bindButtons();
   }
 
@@ -141,6 +155,45 @@ export class UIManager {
         this.audio.play('ui');
         callback();
       });
+    });
+
+    // Team selection is delegated from the whole team area rather than bound per
+    // slot, because the slot elements are reused across renders - a listener on
+    // each one would have to be torn down and rebuilt on every snapshot.
+    //
+    // These clicks only send an intent. Nothing moves until the server has
+    // checked the slot and broadcast the roster again, so a click that loses a
+    // race simply redraws as it was instead of showing a team the player is not
+    // actually in.
+    this.lobbyTeamsEl?.addEventListener('click', (event) => {
+      const target = event.target.closest('.lobby-slot.is-empty, .lobby-avail-join');
+      if (!target || !this.lobbyTeamsEl.contains(target)) return;
+      if (target.disabled) return;
+      if (this.lobbyLocked) return;
+
+      this.audio.resume();
+      this.audio.play('ui');
+
+      if (target.dataset.availJoin) {
+        // No team named: the emptier one, so a single "+" cannot send a full team
+        // sideways. The server still validates whichever slot it picks.
+        this.callbacks.selectTeam?.({ team: this.preferredTeam(), slot: null });
+        return;
+      }
+
+      const slot = Number(target.dataset.slot);
+      if (!Number.isInteger(slot)) return;
+      this.callbacks.selectTeam?.({ team: target.dataset.team, slot });
+    });
+
+    // The empty slots are divs so they can hold a name or a "+" without the
+    // element changing type; give them keyboard access to match.
+    this.lobbyTeamsEl?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const target = event.target.closest('.lobby-slot.is-empty');
+      if (!target || !this.lobbyTeamsEl.contains(target)) return;
+      event.preventDefault();
+      target.click();
     });
 
     const tabBtns = document.querySelectorAll('.tab-btn');
@@ -290,32 +343,197 @@ export class UIManager {
     });
   }
 
-  updateLobbyPlayers(players, hostId, myId) {
-    const container = document.querySelector('#lobby-players-container');
-    container.innerHTML = '';
-    
-    Object.values(players).forEach((p, index) => {
-      const div = document.createElement('div');
-      div.style.padding = '10px 15px';
-      div.style.background = 'rgba(0,0,0,0.4)';
-      div.style.borderLeft = p.id === myId ? '3px solid var(--amber)' : '3px solid var(--cyan)';
-      div.style.display = 'flex';
-      div.style.justifyContent = 'space-between';
-      div.style.fontFamily = 'monospace';
-      
-      const isHost = p.id === hostId;
-      div.innerHTML = `
-        <span style="color: white;">PLAYER ${index + 1} ${p.id === myId ? '<span style="color: var(--amber);">(YOU)</span>' : ''}</span>
-        <span style="color: ${isHost ? 'var(--amber)' : 'var(--cyan)'};">${isHost ? 'HOST' : 'JOINED'}</span>
-      `;
-      container.appendChild(div);
-    });
-    
-    // Show/hide start button depending on if we are the host
-    const startBtn = document.querySelector('#lobby-start-btn');
-    if (startBtn) {
-      startBtn.style.display = myId === hostId ? 'flex' : 'none';
+  /**
+   * Draws the team-selection lobby from one authoritative snapshot.
+   *
+   * The server owns who is in which slot; this only draws what it says. Nothing
+   * here moves a player: a click sends an intent through `selectTeam`, and the
+   * next snapshot is what actually changes the screen. That is why the renderer
+   * trusts `state` completely and keeps no team state of its own.
+   *
+   * @param {object} state  a server `lobbyState` payload
+   * @param {string} myId   our own socket id, so we can mark ourselves
+   */
+  renderLobbyTeams(state, myId) {
+    if (!state || typeof state !== 'object') return;
+
+    // The server decides how many slots a team has; the default only matters if
+    // some other build sends a roster without saying.
+    const size = Number.isInteger(state.teamSize) && state.teamSize > 0 ? state.teamSize : 4;
+    this.lobbyTeamSize = size;
+    // Once the match is running the sides are fixed, so nothing on this screen is
+    // clickable any more.
+    const locked = state.status === 'playing';
+    this.lobbyLocked = locked;
+    // Kept so `preferredTeam` can do its arithmetic from the same snapshot the
+    // screen was just drawn from, instead of a second copy that could disagree.
+    this.lobbyTeamsState = state;
+
+    const taken = { blue: 0, red: 0 };
+    for (const team of LOBBY_TEAMS) {
+      const roster = Array.isArray(state.teams?.[team]) ? state.teams[team] : [];
+      const slots = this.ensureTeamSlots(team, size);
+      slots.forEach((el, index) => {
+        const player = roster[index] ?? null;
+        if (player) taken[team] += 1;
+        this.paintSlot(el, team, index, player, myId, state.host, locked);
+      });
+
+      const count = document.querySelector(`#lobby-${team}-count`);
+      if (count) count.textContent = `${taken[team]}/${size}`;
     }
+
+    this.paintAvailable(state, myId, locked);
+    this.paintLobbyHint(state, myId);
+
+    // Show/hide start button depending on if we are the host.
+    const startBtn = document.querySelector('#lobby-start-btn');
+    if (startBtn) startBtn.style.display = state.host === myId ? 'flex' : 'none';
+  }
+
+  /**
+   * Builds the eight slot elements once and then reuses them.
+   *
+   * The lobby re-renders on every snapshot, so rebuilding the buttons each time
+   * would destroy the element the player just clicked and throw away keyboard
+   * focus with it. The structure never changes; only the contents do.
+   */
+  ensureTeamSlots(team, size) {
+    const host = document.querySelector(`#lobby-${team}-slots`);
+    if (!host) return [];
+    if (host.childElementCount !== size) {
+      host.textContent = '';
+      for (let i = 0; i < size; i += 1) {
+        const slot = document.createElement('div');
+        // A div, not a button: only the empty ones are interactive, and swapping
+        // the element type per render is what would lose the click.
+        slot.className = 'lobby-slot';
+        host.appendChild(slot);
+      }
+    }
+    return Array.from(host.children);
+  }
+
+  /** Fills one slot: a name, or a "+" when it is free and selectable. */
+  paintSlot(el, team, index, player, myId, hostId, locked) {
+    el.className = 'lobby-slot';
+    el.textContent = '';
+    delete el.dataset.team;
+    delete el.dataset.slot;
+    el.removeAttribute('role');
+    // A slot that was empty was focusable, so drop it again once it fills - it
+    // would otherwise stay in the tab order with nothing to do.
+    el.removeAttribute('tabindex');
+    el.removeAttribute('title');
+
+    if (player) {
+      el.classList.add('is-filled');
+      el.appendChild(chip('lobby-slot-name', player.name || 'PLAYER'));
+      if (player.id === myId) el.appendChild(chip('lobby-chip lobby-chip-you', 'YOU'));
+      if (player.isHost || player.id === hostId) el.appendChild(chip('lobby-chip lobby-chip-host', 'HOST'));
+      return;
+    }
+
+    if (locked) {
+      el.classList.add('is-locked');
+      el.textContent = '—';
+      el.title = 'The sides are fixed once the match starts';
+      return;
+    }
+
+    el.classList.add('is-empty');
+    el.dataset.team = team;
+    el.dataset.slot = String(index);
+    el.setAttribute('role', 'button');
+    el.tabIndex = 0;
+    el.textContent = '+';
+    el.title = `Join ${team} team`;
+  }
+
+  /** The middle column: everyone in the room who has not taken a side. */
+  paintAvailable(state, myId, locked) {
+    const list = document.querySelector('#lobby-avail-list');
+    if (!list) return;
+
+    const waiting = Array.isArray(state.available) ? state.available : [];
+    list.textContent = '';
+
+    for (const player of waiting) {
+      const row = document.createElement('div');
+      const isMe = player.id === myId;
+      row.className = isMe ? 'lobby-avail-row is-you' : 'lobby-avail-row';
+
+      row.appendChild(chip('lobby-avail-name', player.name || 'PLAYER'));
+      if (isMe) row.appendChild(chip('lobby-chip lobby-chip-you', 'YOU'));
+      if (player.isHost) row.appendChild(chip('lobby-chip lobby-chip-host', 'HOST'));
+
+      const join = document.createElement('button');
+      join.type = 'button';
+      join.className = 'lobby-avail-join';
+      join.textContent = '+';
+      // Only you can put yourself on a team. The same "+" is drawn for everyone
+      // so the column reads as one list, but on anyone else it is inert rather
+      // than a control that would do nothing.
+      join.disabled = locked || !isMe;
+      if (isMe) {
+        join.dataset.availJoin = '1';
+        join.title = locked ? 'The sides are fixed once the match starts' : 'Take a team';
+      } else {
+        join.title = 'That player picks their own team';
+      }
+      row.appendChild(join);
+
+      list.appendChild(row);
+    }
+  }
+
+  /**
+   * The line under the available list. Normally it just says what to do; a
+   * refusal from the server is shown here instead so a click is never silent.
+   */
+  paintLobbyHint(state, myId) {
+    const hint = document.querySelector('#lobby-avail-hint');
+    if (!hint) return;
+
+    // A refusal is dated rather than simply stored, because it arrives in the
+    // same packet as the snapshot that would otherwise clear it on the way in.
+    const refusal = this.lobbyRefusal;
+    const isFresh = refusal && refusal.forId === myId && Date.now() - refusal.at < LOBBY_REFUSAL_MS;
+    if (isFresh) {
+      hint.textContent = refusal.reason;
+      hint.classList.add('is-refused');
+      return;
+    }
+
+    hint.classList.remove('is-refused');
+    if (state.status === 'playing') {
+      hint.textContent = 'MATCH IN PROGRESS';
+    } else {
+      const amIWaiting = (state.available ?? []).some((p) => p.id === myId);
+      hint.textContent = amIWaiting ? 'PICK A TEAM' : 'WAITING FOR PLAYERS';
+    }
+  }
+
+  /** Records why a team move was refused, so the hint can say it. */
+  showLobbyRefusal(reason, forId) {
+    this.lobbyRefusal = { reason, forId, at: Date.now() };
+  }
+
+  /**
+   * Which team the available-list "+" should ask for: whichever has more room.
+   *
+   * A preference, not a decision. The server still picks the slot and can refuse,
+   * which is what stops this from being a way to bypass the rules - it only
+   * chooses which side to try. Ties go to blue, which is the left-hand column and
+   * so the one this screen reads first.
+   */
+  preferredTeam() {
+    const state = this.lobbyTeamsState;
+    const free = (team) => {
+      const roster = Array.isArray(state?.teams?.[team]) ? state.teams[team] : [];
+      return Math.max(0, this.lobbyTeamSize - roster.filter(Boolean).length);
+    };
+    return free('blue') >= free('red') ? 'blue' : 'red';
   }
 
   finishLoading() {
@@ -525,9 +743,20 @@ export class UIManager {
     this.duelBanner.innerHTML = `ELIMINATED${by}<strong>RESPAWN IN ${Math.max(1, Math.ceil(seconds))}</strong>`;
   }
 
-  announceKill(typeName = 'HOSTILE') {    const item = document.createElement('div');
+  announceKill(killerName, victimName, weapon = 'assaultrifle', isKillerFriendly = true, isVictimFriendly = false) {
+    const item = document.createElement('div');
     item.className = 'kill-item';
-    item.innerHTML = `<span>ELIMINATED</span><strong>${typeName}</strong>`;
+
+    const inner = document.createElement('div');
+    inner.className = 'kill-item-inner';
+    
+    inner.innerHTML = `
+      <div class="kill-killer ${isKillerFriendly ? 'friendly' : 'enemy'}"><span>${killerName}</span></div>
+      <div class="kill-weapon"><img src="/pictures/${weapon}-outline.png" alt="weapon"/></div>
+      <div class="kill-victim ${isVictimFriendly ? 'friendly' : 'enemy'}"><span>${victimName}</span></div>
+    `;
+
+    item.appendChild(inner);
     this.killFeed.prepend(item);
     requestAnimationFrame(() => item.classList.add('visible'));
     const removeTimer = setTimeout(() => {
@@ -538,9 +767,9 @@ export class UIManager {
       }, 220);
       this.killTimers.add(detachTimer);
       this.killTimers.delete(removeTimer);
-    }, 1900);
+    }, 4000);
     this.killTimers.add(removeTimer);
-    while (this.killFeed.children.length > 4) this.killFeed.lastElementChild.remove();
+    while (this.killFeed.children.length > 5) this.killFeed.lastElementChild.remove();
   }
 
   resetMatchHud() {
@@ -603,4 +832,18 @@ export class UIManager {
     document.querySelector('#end-screen').classList.toggle('victory', isWinner);
     this.show('end');
   }
+}
+
+/**
+ * A labelled span for the team lobby.
+ *
+ * Built as a node and filled with `textContent` rather than assembled into an
+ * HTML string, because the text is a player name that came off the network: it
+ * must never be parsed as markup, however the server sanitised it.
+ */
+function chip(className, text) {
+  const el = document.createElement('span');
+  el.className = className;
+  el.textContent = text;
+  return el;
 }

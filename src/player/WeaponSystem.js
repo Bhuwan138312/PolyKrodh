@@ -165,6 +165,11 @@ export class WeaponSystem {
       inserted: 0,
       loaded: -1,
     };
+    this.shotgunReloadKick = 0;
+    this.cockingActive = false;
+    this.cockingElapsed = 0;
+    this.cockingDuration = 0.46;
+    this.cockingSoundPlayed = false;
 
     this.buildModel();
     this.addWeaponLighting();
@@ -453,6 +458,10 @@ export class WeaponSystem {
       lastAds: false,
     };
     this.weaponRig?.reset();
+    this.cockingActive = false;
+    this.cockingElapsed = 0;
+    this.cockingSoundPlayed = false;
+    this.weaponRig?.applyChargingHandleOffset(0);
     this.shellReload.needed = 0;
     this.shellReload.inserted = 0;
     this.shellReload.loaded = -1;
@@ -566,23 +575,44 @@ export class WeaponSystem {
     let reloadOffsetY = 0;
     let reloadOffsetX = 0;
     if (this.reloading) {
-      const p = reloadProgress;
-      const sm = (t) => { const c = Math.min(Math.max(t, 0), 1); return c * c * (3 - 2 * c); };
-      if (p < 0.15) {
-        const t = sm(p / 0.15);
-        reloadTiltZ = -t * 0.95;  // tilt LEFT
-      } else if (p < 0.75) {
-        // Hold tilted with subtle breathing motion so it doesn't feel frozen
-        const breath = Math.sin(this.reloadElapsed * 4.5) * 0.02;
-        reloadTiltZ = -0.95 + breath;
+      if (this.isShotgun) {
+        // Shotgun reload pose: pronounced tactical cant (~30 degrees) exposing the loading port
+        const sm = (t) => { const c = Math.min(Math.max(t, 0), 1); return c * c * (3 - 2 * c); };
+        const p = reloadProgress;
+        let t = 1;
+        if (p < 0.12) t = sm(p / 0.12);
+        else if (p > 0.88) t = sm((1 - p) / 0.12);
+        const breath = Math.sin(this.reloadElapsed * 4.0) * 0.015;
+        reloadTiltZ = (-0.52 + breath) * t;
+        reloadTiltX = 0.06 * t;
+        reloadOffsetY = 0.055 * t;
+        reloadOffsetX = -0.035 * t;
       } else {
-        const t = sm((p - 0.75) / 0.25);
-        reloadTiltZ = -(1 - t) * 0.95;  // return from left
+        const p = reloadProgress;
+        const sm = (t) => { const c = Math.min(Math.max(t, 0), 1); return c * c * (3 - 2 * c); };
+        if (p < 0.15) {
+          const t = sm(p / 0.15);
+          reloadTiltZ = -t * 0.95;  // tilt LEFT
+        } else if (p < 0.75) {
+          // Hold tilted with subtle breathing motion so it doesn't feel frozen
+          const breath = Math.sin(this.reloadElapsed * 4.5) * 0.02;
+          reloadTiltZ = -0.95 + breath;
+        } else {
+          const t = sm((p - 0.75) / 0.25);
+          reloadTiltZ = -(1 - t) * 0.95;  // return from left
+        }
+        reloadTiltX = Math.abs(reloadTiltZ) * -0.12;
+        reloadOffsetY = Math.abs(reloadTiltZ) * -0.06;
+        reloadOffsetX = reloadTiltZ * 0.08;  // shift left with tilt
       }
-      reloadTiltX = Math.abs(reloadTiltZ) * -0.12;
-      reloadOffsetY = Math.abs(reloadTiltZ) * -0.06;
-      reloadOffsetX = reloadTiltZ * 0.08;  // shift left with tilt
     }
+
+    // Shotgun shell insertion kick bump decay
+    if (this.shotgunReloadKick > 0) {
+      this.shotgunReloadKick = Math.max(0, this.shotgunReloadKick - delta * 14);
+    }
+    const shellKickZ = (this.isShotgun ? this.shotgunReloadKick * 0.016 : 0);
+    const shellKickPitch = (this.isShotgun ? this.shotgunReloadKick * 0.022 : 0);
 
     // Sway and bob — amplified during reload for natural body movement
     const reloadSwayBoost = this.reloading ? 2.5 : 1;
@@ -626,11 +656,11 @@ export class WeaponSystem {
       THREE.MathUtils.lerp(this.basePosition.y, this.adsPosition.y, this.adsAmount)
       + reloadOffsetY + bob + carryOffsetY,
       THREE.MathUtils.lerp(this.basePosition.z, this.adsPosition.z, this.adsAmount)
-      + this.weaponKick * kickBackMultiplier * kickScale,
+      + this.weaponKick * kickBackMultiplier * kickScale + shellKickZ,
     );
     this.weaponHolder.rotation.set(
       THREE.MathUtils.lerp(this.baseRotation.x, this.adsRotation.x, this.adsAmount)
-      - this.weaponKick * kickUpMultiplier * kickScale + reloadTiltX - lookSwayY * 0.003 + carryPitch + runPitch,
+      - this.weaponKick * kickUpMultiplier * kickScale - shellKickPitch + reloadTiltX - lookSwayY * 0.003 + carryPitch + runPitch,
       THREE.MathUtils.lerp(this.baseRotation.y, this.adsRotation.y, this.adsAmount) + sway * 0.15 + runYaw + carryYaw + suppressorYaw,
       THREE.MathUtils.lerp(this.baseRotation.z, this.adsRotation.z, this.adsAmount) + reloadTiltZ + runTilt,
     );
@@ -830,6 +860,7 @@ export class WeaponSystem {
   }
 
   tryFire() {
+    if (this.player.health && this.player.health.dead) return;
     if (this.fireCooldown > 0 || this.dryCooldown > 0) return;
     if (this.reloading) {
       // Mag-fed weapons have to finish the reload, but a shotgun can be broken
@@ -1154,6 +1185,10 @@ export class WeaponSystem {
     if (this.reloading || this.magazine >= this.config.magazineSize || this.reserve <= 0) return;
     this.reloading = true;
     this.reloadElapsed = 0;
+    this.cockingActive = false;
+    this.cockingElapsed = 0;
+    this.cockingSoundPlayed = false;
+    this.weaponRig?.applyChargingHandleOffset(0);
     if (this.isShotgun) {
       // Only the shells that are actually missing get loaded, so a partly
       // loaded tube finishes quickly instead of replaying all five.
@@ -1182,7 +1217,7 @@ export class WeaponSystem {
   getReloadDuration() {
     if (!this.isShotgun) return this.config.reloadDuration;
     const shells = this.shellReload.needed || Math.max(0, this.config.magazineSize - this.magazine);
-    return Math.max(0.05, shells * this.getShellLoadInterval());
+    return Math.max(0.05, shells * this.getShellLoadInterval() + (shells > 0 ? this.cockingDuration : 0));
   }
 
   getShellLoadInterval() {
@@ -1194,7 +1229,7 @@ export class WeaponSystem {
     this.reloadElapsed += delta;
 
     if (this.isShotgun) {
-      this.updateShellReload();
+      this.updateShellReload(delta);
       return;
     }
 
@@ -1225,7 +1260,7 @@ export class WeaponSystem {
    * a beat to the moment the round is actually in the gun, so the HUD does not
    * claim a shell the animation has not loaded yet.
    */
-  updateShellReload() {
+  updateShellReload(delta) {
     const state = this.shellReload;
     const interval = this.getShellLoadInterval();
     // Where the reload is, measured in beats rather than seconds, so the ammo
@@ -1245,6 +1280,7 @@ export class WeaponSystem {
       this.magazine = Math.min(this.config.magazineSize, this.magazine + 1);
       this.reserve = Math.max(0, this.reserve - 1);
       this.audio.play('shell_insert');
+      this.shotgunReloadKick = 1.0;
     }
     if (state.inserted !== state.loaded) {
       state.loaded = state.inserted;
@@ -1253,19 +1289,34 @@ export class WeaponSystem {
 
     this.callbacks.onReloadProgress?.(this.magazine, this.reserve, this.reloadElapsed);
 
-    // Done once the last round is in AND its follow-through has played, so the
-    // hand is not cut off mid-push. `getReloadDuration` is exactly `needed`
-    // beats, so this is also the frame the progress bar reaches full.
-    if (beats >= state.needed) this.finishShellReload();
+    // Once all shells are inserted, immediately pull the charging handle with the right hand
+    if (beats >= state.needed) {
+      if (!this.cockingActive) {
+        this.cockingActive = true;
+        this.cockingElapsed = 0;
+        this.cockingSoundPlayed = false;
+      }
+
+      this.cockingElapsed += delta;
+      const progress = Math.min(1, this.cockingElapsed / this.cockingDuration);
+      const handleOffset = this.hands?.updateChargingHandlePull(progress) ?? 0;
+      this.weaponRig?.applyChargingHandleOffset(handleOffset);
+
+      if (progress >= 0.32 && !this.cockingSoundPlayed) {
+        this.cockingSoundPlayed = true;
+        this.audio.play('shotgun_cock');
+        this.shotgunReloadKick = 0.8;
+      }
+
+      if (this.cockingElapsed >= this.cockingDuration) {
+        this.finishShellReload();
+      }
+    }
   }
 
   /**
-   * Drives the support hand and the viewmodel's loading pose. Runs every frame
-   * the gun exists, not only while reloading, because the hand still has to walk
-   * back to the grip after the last round - the reload is over, the hand is not.
-   *
-   * `beat` is -1 when there is nothing to load, which is what puts the hand into
-   * its return rather than leaving it wherever the last beat ended.
+   * Drives the shell prop and the viewmodel's loading pose. Runs every frame
+   * the gun exists.
    */
   updateShellLoadAnimation(delta) {
     if (!this.hands) return;
@@ -1280,24 +1331,21 @@ export class WeaponSystem {
 
     let beat = -1;
     let phase = 0;
-    if (this.reloading && this.isShotgun) {
+    let isLast = false;
+    if (this.reloading && this.isShotgun && !this.cockingActive) {
       const interval = this.getShellLoadInterval();
       const position = this.reloadElapsed / interval;
       const whole = Math.floor(position);
       beat = Math.min(this.shellReload.needed - 1, whole);
       phase = position - whole;
+      isLast = (beat >= this.shellReload.needed - 1);
     }
 
-    // Only hand the port to the hand when the hand can actually be seen working
-    // it. Held in its normal carry the tube mouth is off the bottom of the
-    // screen and the point the fist has to stand at is behind the near plane, so
-    // without this the hand would dive out of frame and vanish mid-reload -
-    // worse than it never leaving the grip. The gun still cants over, and the
-    // ammo still counts up either way.
     this.hands.updateShellLoad({
-      beat: this.shellPortVisible() ? beat : -1,
+      beat,
       phase,
       delta,
+      isLast,
       insertPoint: hasPort ? this.shellPortPoint : null,
       insertDir: hasPort ? this.shellPortDir : null,
     });
@@ -1305,11 +1353,6 @@ export class WeaponSystem {
 
   /**
    * Whether the loading port is somewhere the player can see it.
-   *
-   * Projected through the camera rather than assumed, because it depends on the
-   * live holder transform - aim, sprint and the reload cant all move it. The
-   * hand is given a generous margin: it is a big object, and it only has to be
-   * close enough to read as working the tube.
    */
   shellPortVisible() {
     if (this.shellPortProjected) {
@@ -1320,20 +1363,32 @@ export class WeaponSystem {
   }
 
   finishShellReload() {
+    this.cockingActive = false;
+    this.cockingElapsed = 0;
+    this.cockingSoundPlayed = false;
+    this.weaponRig?.applyChargingHandleOffset(0);
     this.reloading = false;
     this.reloadElapsed = 0;
     this.shellReload.inserted = 0;
     this.shellReload.loaded = -1;
+    this.shotgunReloadKick = 0;
+    this.hands?.resetShellLoad();
     this.callbacks.onReloadEnd?.();
     this.emitAmmo();
   }
 
   /** Firing out of a reload keeps whatever is already seated. */
   cancelShellReload() {
+    this.cockingActive = false;
+    this.cockingElapsed = 0;
+    this.cockingSoundPlayed = false;
+    this.weaponRig?.applyChargingHandleOffset(0);
     this.reloading = false;
     this.reloadElapsed = 0;
     this.shellReload.inserted = 0;
     this.shellReload.loaded = -1;
+    this.shotgunReloadKick = 0;
+    this.hands?.resetShellLoad();
     this.callbacks.onReloadEnd?.();
     this.emitAmmo();
   }

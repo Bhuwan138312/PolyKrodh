@@ -70,7 +70,6 @@ export class NetworkManager {
         this.matchStarted = true;
         this.game.startMatch('normal', data.map || 'arena', true, false, roomName, true);
       }
-      if (!this.matchStarted) this.updateLobbyUI();
     });
 
     this.socket.on('matchStarted', (mapName) => {
@@ -78,10 +77,20 @@ export class NetworkManager {
       this.game.startMatch('normal', mapName || 'arena', true, false, roomName, true);
     });
 
+    // The server owns team membership and re-broadcasts the whole roster after
+    // every change - a join, a team move, a disconnect, the match starting. This
+    // is the only event that draws the lobby, so the screen cannot drift out of
+    // step with the server by missing one update.
+    this.socket.on('lobbyState', (state) => {
+      if (!state || typeof state !== 'object') return;
+      if (typeof state.host === 'string') this.hostId = state.host;
+      if (this.matchStarted) return;
+      this.game.ui.renderLobbyTeams(state, this.socket.id);
+    });
+
     // When we first join, server sends us everyone already in the game
     this.socket.on('currentPlayers', (players) => {
       this.lobbyPlayers = players;
-      if (!this.matchStarted) this.updateLobbyUI();
 
       Object.keys(players).forEach(id => {
         if (id === this.socket.id) return; // Don't add ourselves
@@ -107,14 +116,12 @@ export class NetworkManager {
     // When a new player joins while we are already in
     this.socket.on('newPlayer', (playerInfo) => {
       this.lobbyPlayers[playerInfo.id] = playerInfo;
-      if (!this.matchStarted) this.updateLobbyUI();
       this.addRemotePlayer(playerInfo);
     });
 
     // When someone leaves
     this.socket.on('playerDisconnected', (id) => {
       delete this.lobbyPlayers[id];
-      if (!this.matchStarted) this.updateLobbyUI();
       this.removeRemotePlayer(id);
       this.game.scoreboard?.remove(id);
     });
@@ -194,7 +201,7 @@ export class NetworkManager {
         const rp = this.remotePlayers.get(data.victimId);
         if (rp) {
           this.applyRemoteState(data.victimId, { health: 0, isAlive: false });
-          this.game.ui.announceKill('Player ' + data.victimId.substring(0, 4));
+          this.game.ui.announceKill('ENEMY', 'PLAYER ' + data.victimId.substring(0, 4), 'assaultrifle', false, false);
         }
       }
     });
@@ -274,8 +281,25 @@ export class NetworkManager {
     return rp;
   }
 
-  updateLobbyUI() {
-    this.game.ui.updateLobbyPlayers(this.lobbyPlayers, this.hostId, this.socket.id);
+  /**
+   * Asks the server to move us into a team slot.
+   *
+   * A request, not a command, and deliberately with no optimistic update: nothing
+   * on screen moves until the server has validated the slot and broadcast the
+   * roster. That is what makes a lost race harmless - the click simply redraws as
+   * it was instead of showing a team the player is not in.
+   *
+   * @param {{team: 'blue'|'red', slot: number|null}} intent
+   */
+  selectTeam({ team, slot = null } = {}) {
+    if (!this.socket || !this.connected) return;
+    this.socket.emit('selectTeam', { team, slot }, (result) => {
+      // The server answers with why it said no, so a refusal can be shown instead
+      // of the click doing nothing at all.
+      if (result && result.ok === false) {
+        this.game.ui.showLobbyRefusal?.(result.reason || 'That slot is not available', this.socket.id);
+      }
+    });
   }
 
   disconnect() {
