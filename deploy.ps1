@@ -36,7 +36,7 @@ $root = $PSScriptRoot
 function Send-File {
     param([string]$Local, [string]$Remote, [string]$Label)
     Write-Host "  $Label" -NoNewline
-    scp -q $Local "${Server}:$Remote"
+    scp -r -q $Local "${Server}:$Remote"
     if ($LASTEXITCODE -ne 0) { throw "Upload failed: $Label" }
     Write-Host "  ok" -ForegroundColor DarkGreen
 }

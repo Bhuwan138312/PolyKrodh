@@ -1040,16 +1040,25 @@ export class Game {
     }
 
     if (!this.outcome) {
-      // Drop ADS during reload or weapon switch
-      this.player.forceNoAds = this.activeWeapon.reloading || this.weaponSwitching;
-      this.player.updateAimState(delta);
-      const look = this.input.consumeMouseDelta();
-      this.player.look(look.x, look.y);
-      this.player.update(delta, true);
-      if (this.outcome) return;
-      this.activeWeapon.update(delta);
-      if (this.outcome) return;
-      this.updateWeaponSwitch(delta);
+      if (!this.respawnPending) {
+        // Drop ADS during reload or weapon switch
+        this.player.forceNoAds = this.activeWeapon.reloading || this.weaponSwitching;
+        this.player.updateAimState(delta);
+        const look = this.input.consumeMouseDelta();
+        this.player.look(look.x, look.y);
+        this.player.update(delta, true);
+        if (this.outcome) return;
+        this.activeWeapon.update(delta);
+        if (this.outcome) return;
+        this.updateWeaponSwitch(delta);
+      } else {
+        // While waiting to respawn, force weapon hidden and apply gravity/friction
+        // so the corpse drops to the floor but player can't move or aim.
+        this.player.update(delta, false); 
+        if (this.activeWeapon.weaponHolder) {
+          this.activeWeapon.weaponHolder.visible = false;
+        }
+      }
       this.spawner.update(delta, { player: this.player, elapsed: this.elapsed });
       this.activeWeapon.updateTransientEffects(delta);
       // The optic readout and the screen-space scope both follow the active
